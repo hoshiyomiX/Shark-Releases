@@ -98,6 +98,46 @@ offsets (`init_task` / `init_cred` / `root_task_group`) and emits every
 derived symbol in the same `0xffffffc080000000` frame. The script aborts
 if the three anchors do not agree.
 
+## Probe first (step 0)
+
+`tools/probe-x6873.sh` is a read-only environment & data collector. Run
+it BEFORE the derive script — it establishes which derivation path is
+viable and captures the raw material for offline analysis:
+
+```sh
+adb push ports/x6873/tools/probe-x6873.sh /data/local/tmp/
+adb shell sh /data/local/tmp/probe-x6873.sh
+```
+
+No root is required (root sections run opportunistically when `su`
+works). Every tracefs file it touches is saved and restored; it leaves
+no enabled events, registered kprobes or instances behind, and no part
+of the exploit runs.
+
+It checks, in order: release gating, SELinux, CPUs/memory/rlimits, the
+full tracefs access matrix the engine needs as the shell uid
+(`trace_pipe_raw` read; `tracing_on` / kmem event-enable /
+`rss_stat` trigger / `instances/` / `kprobe_events` writes), security
+sysctls, kallsyms visibility of the exact symbols the port needs,
+slabinfo rows, IKCONFIG, a one-shot kmem capture with fork churn
+(state restored), and root/manager availability. `--dump-boot`
+additionally copies the current-slot boot image into the bundle when
+root is available (for offline `recover.py` work, 64-128 MB).
+
+The summary prints one of three verdicts:
+
+- `PATH A` — kallsyms visible + tracefs writable:
+  `derive-consts.sh` can run without root.
+- `PATH B` — kallsyms hidden but `su` works: run `derive-consts.sh`
+  under temporary root (e.g. a GhostLock session).
+- `engine BLOCKED` — some shell-uid requirement failed (e.g. tracefs
+  writes denied): the engine itself cannot run from adb/Shizuku on
+  this build; report the failed lines before investing any time in
+  constants.
+
+Send back BOTH the full console output and the printed bundle path
+(`x6873_probe_<ts>.tar.gz`).
+
 ## Deriving the pending constants
 
 The script needs a root shell on the X6873 itself. Temporary root is
@@ -141,18 +181,20 @@ field is non-zero.
 
 ## On-device verification checklist
 
-1. Clean boot (no KernelSU patches loaded, stock kernel), Stellar or
+1. Run `tools/probe-x6873.sh` (see "Probe first"); confirm the engine
+   verdict is not BLOCKED and note the reported derivation path.
+2. Clean boot (no KernelSU patches loaded, stock kernel), Stellar or
    Shizuku running, Shark authorized.
-2. Info card shows `CVE-2026-98260-Infinix-6.1.157` (release matched).
-3. Before constants are derived, tapping jailbreak must stop with
+3. Info card shows `CVE-2026-98260-Infinix-6.1.157` (release matched).
+4. Before constants are derived, tapping jailbreak must stop with
    `PORT_61157_PENDING` in the log — verify this once on purpose.
-4. After pasting the constants and rebuilding: run the jailbreak, watch
+5. After pasting the constants and rebuilding: run the jailbreak, watch
    for `PROBE_SLIDE=… aligned=1` and the plant stages (timer reclaim →
    cred spray → fake-cred write → `selinux` → `panic_on_warn`).
-5. Manager opens; `su -c id` returns `uid=0(root)`; SELinux state per
+6. Manager opens; `su -c id` returns `uid=0(root)`; SELinux state per
    the engine chain (the write targets enforcing directly).
-6. Reboot and re-run to confirm the temp-root cycle.
-7. If the race never lands on 6.1 (W1-equivalent exhausted, no reclaim),
+7. Reboot and re-run to confirm the temp-root cycle.
+8. If the race never lands on 6.1 (W1-equivalent exhausted, no reclaim),
    capture the full log — that is engine-level evidence, not a constants
    problem (see the caveat below).
 
