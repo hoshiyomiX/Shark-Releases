@@ -44,7 +44,17 @@
 # Portability: pure POSIX shell (mksh + toybox on Android; also runs under
 # dash/bash for offline mock tests). No awk, no sed, no python.
 
-VERSION="1.1"
+VERSION="1.2"
+# v1.2 (2026-11-12, after the first real non-root run): the work-dir
+# discovery used '[ -w /data/local/tmp ]', which fails in app-domain
+# terminals (DAC 'other' has no write bit there) and the fallback list
+# ($PWD, /tmp) is never writable on Android either -> "FATAL: no
+# writable work directory". v1.2 probes candidates with a REAL write
+# (create + remove a per-uid temp file), adds TMPDIR / HOME / the
+# script's own directory / /sdcard to the candidate list, reports WHY
+# each candidate was rejected, and prints the chosen work dir + uid
+# up front. Also flags runs from a uid that is neither root nor the
+# shell uid 2000 (the S4 matrix is only authoritative for uid 2000).
 RELEASE="6.1.157-android14-11-ga8b0b542991e-ab15601211"
 
 # --- overridable inputs (also used by the offline mock tests) ---
@@ -72,18 +82,32 @@ done
 TS="$(date +%Y%m%d_%H%M%S 2>/dev/null || echo manual)"
 WORK="${X6873_WORK:-}"
 if [ -z "$WORK" ]; then
-    for d in /data/local/tmp "$PWD" /tmp; do
-        if [ -d "$d" ] && [ -w "$d" ]; then
+    # Probe candidates with a REAL write (create + remove), not '[ -w ]':
+    # access(2) misleads in app-domain terminals and behind FUSE.
+    _UID="$(id -u 2>/dev/null || echo 0)"
+    _SD="$(dirname "$0" 2>/dev/null)"
+    _REJ=""
+    for d in "${TMPDIR:-}" "${HOME:-}" /data/local/tmp "$_SD" "$PWD" /sdcard /tmp; do
+        [ -n "$d" ] || continue
+        if [ ! -d "$d" ]; then _REJ="$_REJ $d(missing)"; continue; fi
+        if ( : > "$d/.x6873_probe_w.$_UID.$$" ) 2>/dev/null; then
+            rm -f "$d/.x6873_probe_w.$_UID.$$" 2>/dev/null
             WORK="$d/x6873_probe_$TS"
             break
         fi
+        _REJ="$_REJ $d(nowrite)"
     done
 fi
 if [ -z "$WORK" ]; then
-    echo "FATAL: no writable work directory found (tried /data/local/tmp, \$PWD, /tmp)"
+    echo "FATAL: no writable work directory found"
+    echo "  rejected:$_REJ"
+    echo "  HINT: app-domain terminals (Termux etc.) usually cannot write"
+    echo "  /data/local/tmp - run from 'adb shell' (uid 2000) or with su,"
+    echo "  or set X6873_WORK=<writable dir> and re-run."
     exit 1
 fi
 mkdir -p "$WORK" 2>/dev/null || { echo "FATAL: cannot create $WORK"; exit 1; }
+echo "probe v$VERSION workdir: $WORK (uid $(id -u 2>/dev/null || echo unknown))"
 LOG="$WORK/probe.log"
 
 # --- logging helpers (no tee dependency) ---
@@ -160,7 +184,15 @@ if [ "$PROBE_UID" = "0" ]; then
     bad "uses. Re-run WITHOUT su (adb shell sh ...) for the engine verdict;"
     bad "this run is still fine for S1/S5-S11 data collection."
 else
-    ok "probe runs unprivileged (uid $PROBE_UID): S4/S12 reflect the engine's view"
+    if [ "$PROBE_UID" = "2000" ]; then
+        ok "probe runs as the shell uid (2000): S4/S12 reflect the engine's view"
+    else
+        ok "probe runs unprivileged (uid $PROBE_UID)"
+        info "NOTE: uid is not 2000 (adb shell). If this terminal is an app"
+        info "domain (Termux etc.), the S4 tracefs matrix below measures the"
+        info "APP uid, not the shell uid the engine runs as - prefer"
+        info "'adb shell sh /data/local/tmp/probe-x6873.sh' for the verdict."
+    fi
 fi
 
 # ------------------------------------------------------------ S1 identity
@@ -736,7 +768,7 @@ if [ "$ENGINE" = "1" ]; then
         lg "VERDICT derive : PATH B - derivation with temporary root"
         lg "                 (kallsyms hidden but su works). Run"
         lg "                 ports/x6873/tools/derive-consts.sh under su -"
-        lg "                 v2 lifts kptr_restrict=2 by itself (this build"
+        lg "                 it lifts kptr_restrict=2 by itself (this build"
         lg "                 zeroes kallsyms even for root, observed in the"
         lg "                 2026-11-12 bundle: root kallsyms 0/14 visible)."
     else

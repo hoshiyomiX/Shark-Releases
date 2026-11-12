@@ -192,10 +192,27 @@ Findings:
   None blocks the derivation; they are engine-stage risk factors on
   race day.
 
-What remains before the first real run: one `derive-consts.sh` v2 run
+What remains before the first real run: one `derive-consts.sh` v3 run
 under `su` (fills `timer_site` + the five data symbols, re-verifies the
 baked low21s), one unprivileged probe re-run (engine verdict), then
 rebuild + the on-device checklist below.
+
+First derive/probe run findings (2026-11-12, evening):
+
+- derive v2 under `su`: `kptr_restrict` lift worked and all three
+  anchors + slab sizes were read, but the mksh 32-bit arithmetic bug
+  zeroed the slide (see the v3 notes above) and the embedded prober
+  failed (`timer_create`); v2 aborted without output. Both are fixed
+  in v3 — the sites no longer depend on the prober.
+- probe v1.1 without `su` from the on-device terminal: died with
+  `FATAL: no writable work directory` — that terminal's context cannot
+  write `/data/local/tmp` (DAC `other` has no write bit there) and the
+  v1.1 fallback candidates (`$PWD`, `/tmp`) are never writable on
+  Android. probe v1.2 probes candidates with a real write, adds
+  `TMPDIR`/`HOME`/script-dir/`/sdcard`, reports why each candidate was
+  rejected, and notes when the running uid is neither root nor the
+  shell uid 2000 (app-domain terminals measure the wrong uid for the
+  S4 matrix — prefer `adb shell`).
 
 ## Deriving the pending constants
 
@@ -209,7 +226,7 @@ su    # GhostLock temporary root
 sh /data/local/tmp/derive-consts.sh
 ```
 
-What it does:
+What it does (v3):
 
 1. Verifies `uname -r` matches the target release and `/proc/kallsyms`
    is readable.
@@ -217,15 +234,37 @@ What it does:
    offsets (aborts on mismatch — that would mean a different kernel
    build).
 3. Extracts `panic_on_warn`, `root_user`, `init_user_ns`,
-   `init_ucounts`, `init_groups` from kallsyms into the port base frame.
-4. Extracts an embedded static arm64 prober that fires one
-   `timer_create(CLOCK_THREAD_CPUTIME_ID)` and one `fork()` under the
-   `kmem_cache_alloc` tracer, then reads the trace text to recover the
-   `do_timer_create` and `dup_task_struct` call sites plus the
-   `posix_timers_cache` / `cred_jar` / `task_struct` allocation sizes.
-5. Cross-checks the prefilled `SELINUX_STATE_STATIC` against kallsyms.
-6. Prints the ready-to-paste profile block for `K61157_plant.c` and the
-   slab defines for the `X6873_61157` branch of `plant_core.inc`.
+   `init_ucounts`, `init_groups` plus `do_timer_create` and
+   `dup_task_struct` from kallsyms (one pass, inside the lifted
+   `kptr_restrict` window) into the port base frame.
+4. Derives the FULL `timer_site` / copy call sites from the
+   `do_timer_create` / `dup_task_struct` linked offsets plus the
+   bundle-baked low21s (`0x19feb0` / `0xac148`): candidates are
+   low21 + k*2MiB and the true site must sit within ±16 KiB of its
+   symbol — at most one candidate can, so the disambiguation is
+   single-shot. A miss aborts (different kernel build).
+5. Confirmation layer, best effort, never aborts on its own: the
+   embedded static arm64 prober (one `timer_create` + one `fork`,
+   pid-filtered trace records) → on failure its `probe.out` is dumped
+   INLINE and a passive 2 s all-pid trace window is tried → baked
+   bundle sizes. If any confirmation trace produces records, their
+   call sites must match the kallsyms-derived sites exactly (abort on
+   disagreement — that is a real inconsistency).
+6. Cross-checks the prefilled `SELINUX_STATE_STATIC` against kallsyms.
+7. Prints the ready-to-paste profile block for `K61157_plant.c` and
+   the slab defines for the `X6873_61157` branch of `plant_core.inc`,
+   with the provenance of each value in the comments.
+
+v3 exists because the first real-device run of v2 failed twice on
+2026-11-12: (a) Android mksh computes `$(( ))` in 32-bit signed ints,
+   so v2's `% 4294967296` died with `zero divisor` and — worse — the
+   empty slide then compared EQUAL across all three anchors and v2
+   failed OPEN (the printed selinux delta of -36026400 was exactly
+   this bug); v3 keeps every value as a signed int32 representative
+   (mod-2^32 exact, no 2^32 literals, every derived value validated as
+   a real integer). (b) the embedded prober failed on-device with an
+   opaque `timer_create failed` — v3 no longer depends on it for the
+   derivation at all.
 
 Then rebuild the runner and the app:
 
