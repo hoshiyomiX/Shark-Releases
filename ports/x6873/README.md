@@ -2,18 +2,23 @@
 
 ## Status
 
-**Scaffolding, fail-closed.** The X6873 chain is wired end to end (runner
-feature, plant, app integration), and every constant that could be
-transferred from a measured source for this exact kernel build is filled
-in. The remaining per-build constants need one on-device derivation run
-(`tools/derive-consts.sh`, minutes with temporary root); until they are
-pasted in, the plant refuses to start and prints
-`PORT_61157_PENDING` instead of touching the kernel.
+**Scaffolding, fail-closed — constants partially derived.** The X6873
+chain is wired end to end (runner feature, plant, app integration). The
+2026-11-12 on-device probe bundle filled the low21 call-site constants
+and all three slab size pairs (see "Probe results" below); the KASLR
+slide pinned static addresses (`timer_site` and the five data symbols)
+still need one `tools/derive-consts.sh` run under `su` (v2 handles this
+build's `kptr_restrict=2` itself). Until they are pasted in, the plant
+refuses to start and prints `PORT_61157_PENDING` instead of touching
+the kernel.
 
 Engine compatibility is **not yet proven on 6.1** — see the caveat at the
 bottom. This port follows the same posix-cpu-timers engine as the 6.18 /
 6.12 / 6.6 chains; whether the race behaves identically on
-`6.1.157-android14` can only be answered by the on-device run.
+`6.1.157-android14` can only be answered by the on-device run. The
+2026-11-12 probe also confirmed `CONFIG_KASAN_HW_TAGS=y` and
+`CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y` on this build — engine-level risk
+factors for the spray stages, noted in the caveat.
 
 ## Target device
 
@@ -64,8 +69,10 @@ entries:
 ## Constants
 
 Sources: `GL` = GhostLock X6873 kernel profile for this exact release
-(measured on device, 33/33 boots), `S` = Shark engine requirement,
-`D` = pending on-device derivation via `tools/derive-consts.sh`.
+(measured on device, 33/33 boots), `P` = offline analysis of the
+2026-11-12 probe bundle (`x6873_probe_20261112_195833`, build
+`301500018`, slot `_b`), `D` = pending on-device derivation via
+`tools/derive-consts.sh`.
 
 | Constant | Value | Source | Status |
 |---|---|---|---|
@@ -74,16 +81,17 @@ Sources: `GL` = GhostLock X6873 kernel profile for this exact release
 | `task_struct.real_cred` | `0x830` (2096) | GL | reference |
 | `SELINUX_STATE_STATIC` | `0xffffffc08225b827` (= enforcing `0x225b820` + base + 7) | GL | final (script re-verifies) |
 | cred layout (`caps 0x30 ×5`, `security 0x80`, `user 0x88`, `user_ns 0x90`, `ucounts 0x98`, `group_info 0xa0`) | matches engine template | GL 6.x credential template | final |
-| `STATIC_TIMER_SITE` / `TIMER_SITE_LOW21` | — | D | pending |
-| `COPY_PROCESS_LOW21` | — | D | pending |
+| `TIMER_SITE_LOW21` | `0x19feb0` (139/139 timer allocs, 15 pids, one site) | P | final (prober re-verifies) |
+| `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster) | P | final (prober re-verifies) |
+| `STATIC_TIMER_SITE` | — | D | pending (runtime site seen `0xffffffe0d2d9feb0`; frame pin needs the derive run) |
 | `PANIC_ON_WARN_STATIC` | — | D | pending |
 | `ROOT_USER_STATIC` | — | D | pending |
 | `INIT_USER_NS_STATIC` | — | D | pending |
 | `INIT_UCOUNTS_STATIC` | — | D | pending |
 | `INIT_GROUPS_STATIC` | — | D | pending |
-| `TIMER_REQ` / `TIMER_ALLOC` (posix_timers_cache) | — | D | pending |
-| `CRED_REQ` / `CRED_ALLOC` (cred_jar) | — | D | pending |
-| `TASK_ALLOC_BYTES` / `TASK_ALLOC_PADDED` | — | D | pending |
+| `TIMER_REQ` / `TIMER_ALLOC` | `0x108` / `0x140` (139 events) | P | final |
+| `CRED_REQ` / `CRED_ALLOC` | `0xb0` / `0xc0` (65 events) | P | final |
+| `TASK_ALLOC_BYTES` / `TASK_ALLOC_PADDED` | `0x12c0` / `0x12c0` (29 events) | P | final |
 | KASLR slide anchors (`init_task 0x201f640`, `init_cred 0x2031aa8`, `root_task_group 0x2209980`) | used by the derive script to pin the slide | GL | reference |
 
 ## Base-address convention
@@ -137,6 +145,57 @@ The summary prints one of three verdicts:
 
 Send back BOTH the full console output and the printed bundle path
 (`x6873_probe_<ts>.tar.gz`).
+
+**Run it WITHOUT `su`.** The engine runs as the unprivileged shell uid,
+so the S4 tracefs matrix / S12 engine verdict are only meaningful from
+an unprivileged shell. (The 2026-11-12 bundle was captured under
+`u:r:ksu:s0`, making those sections root-flavored; probe v1.1 detects
+and flags this. The identity/sysctl/slab/config/capture data is
+unaffected.)
+
+## Probe results (2026-11-12, bundle `x6873_probe_20261112_195833`)
+
+Device: Infinix GT 30 Pro (X6873), XOS 16 build `BP2A.250605.031.A3` /
+`301500018`, security patch 2026-08-01, slot `_b`, `ro.hardware=mt6897`,
+KernelSU (Re:Sukisu) + GhostLock app installed, SELinux Enforcing,
+`kptr_restrict=2`, `dmesg_restrict=0`, `perf_event_paranoid=-1`.
+
+Findings:
+
+- Release gate: `uname -r` matches the port profile exactly.
+- Verdict **PATH B** for the constants derivation: kallsyms hidden — on
+  this build zeroed **even for uid 0** (`kptr_restrict=2` blocks every
+  reader; the root kallsyms copy shows 0/14 symbols) — but `su` works.
+  `derive-consts.sh` v2 lifts `kptr_restrict` for its kallsyms reads and
+  restores it right after (trap-guarded).
+- Engine environment: 8 CPUs, 6.5 GB available, `max_map_count` 65530,
+  all four kmem tracepoints present, `tracing_on` / event-enable /
+  `rss_stat`-trigger / `instances` / `kprobe_events` writes all OK —
+  but measured as root in this run; re-run the probe unprivileged for
+  the authoritative engine verdict. The single `trace_pipe_raw` cpu2
+  read failure was a quiet-cpu blocking-read artifact (S9 pulled 1 MB
+  from cpu2 with events flowing), not a permission problem.
+- The one-shot capture (1.45 MB raw records over 3 CPUs) yielded
+  everything derivable offline: 20195 kmem_cache_alloc records decoded
+  by a dual-method parser (ring-buffer walker + engine-style pattern
+  scan, zero disagreement), the fork path fully visible (29 churn
+  forks: task/signal/sighand/mm sites inside a 2 KB `kernel/fork.c`
+  cluster), and the posix-timer funnel (139 allocs, 15 pids, one site).
+  The low21s and slab sizes are baked into the profile now.
+- Runtime kernel image VAs observed at `0xffffffe0xxxxxxxx` (the
+  fork.c / cred.c / posix-timers.c / file_table.c call-site cluster is
+  internally consistent). Converting them to the linked-image frame
+  needs one kallsyms-backed anchor — exactly what the remaining derive
+  run provides.
+- Kernel config risks for the engine (not constants): KASAN HW tags,
+  init-on-alloc, SLUB debug, freelist random + hardened — all present.
+  None blocks the derivation; they are engine-stage risk factors on
+  race day.
+
+What remains before the first real run: one `derive-consts.sh` v2 run
+under `su` (fills `timer_site` + the five data symbols, re-verifies the
+baked low21s), one unprivileged probe re-run (engine verdict), then
+rebuild + the on-device checklist below.
 
 ## Deriving the pending constants
 

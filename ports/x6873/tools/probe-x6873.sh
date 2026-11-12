@@ -44,7 +44,7 @@
 # Portability: pure POSIX shell (mksh + toybox on Android; also runs under
 # dash/bash for offline mock tests). No awk, no sed, no python.
 
-VERSION="1.0"
+VERSION="1.1"
 RELEASE="6.1.157-android14-11-ga8b0b542991e-ab15601211"
 
 # --- overridable inputs (also used by the offline mock tests) ---
@@ -145,6 +145,23 @@ lg "uid    : $(id 2>/dev/null || echo unknown)"
 _sec_ctx="$(cat /proc/self/attr/current 2>/dev/null)" && \
     lg "domain : $_sec_ctx" || lg "domain : (unreadable)"
 lg "argv0  : $0"
+
+# The S4 tracefs matrix and the S12 engine verdict are only authoritative
+# for the ENGINE (which runs as the unprivileged shell uid) when the probe
+# itself runs unprivileged. Under su every access check passes as root and
+# proves nothing about the shell uid (observed in the 2026-11-12 bundle,
+# which ran under u:r:ksu:s0 and still printed a shell-uid verdict).
+PROBE_UID=$(id -u 2>/dev/null || echo unknown)
+V_ROOT_RUN=0
+if [ "$PROBE_UID" = "0" ]; then
+    V_ROOT_RUN=1
+    bad "probe is running as ROOT: the S4 tracefs matrix and the S12 engine"
+    bad "verdict below reflect ROOT access, not the shell uid the engine"
+    bad "uses. Re-run WITHOUT su (adb shell sh ...) for the engine verdict;"
+    bad "this run is still fine for S1/S5-S11 data collection."
+else
+    ok "probe runs unprivileged (uid $PROBE_UID): S4/S12 reflect the engine's view"
+fi
 
 # ------------------------------------------------------------ S1 identity
 sec "S1 identity (release gating)"
@@ -247,6 +264,7 @@ for _ev in kmem_cache_alloc mm_page_alloc mm_page_free rss_stat; do
 done
 
 # raw buffer read test (non-blocking via timeout; plain dd fallback)
+_c2fail=0
 for _c in 0 2; do
     _raw="$TR/per_cpu/cpu$_c/trace_pipe_raw"
     if [ -f "$_raw" ]; then
@@ -255,18 +273,27 @@ for _c in 0 2; do
                 [ "$_c" = "0" ] && { V_RAW_READ=1; ok "trace_pipe_raw readable (cpu$_c)"; }
             else
                 bad "trace_pipe_raw read failed (cpu$_c)"
+                [ "$_c" = "2" ] && _c2fail=1
             fi
         else
             if dd if="$_raw" bs=64 count=1 > /dev/null 2>&1; then
                 [ "$_c" = "0" ] && { V_RAW_READ=1; ok "trace_pipe_raw readable (cpu$_c, no timeout tool)"; }
             else
                 bad "trace_pipe_raw read failed (cpu$_c)"
+                [ "$_c" = "2" ] && _c2fail=1
             fi
         fi
     else
         bad "trace_pipe_raw MISSING (cpu$_c)"
     fi
 done
+if [ "$_c2fail" = "1" ]; then
+    info "cpu2 raw-read note: a QUIET cpu starves the blocking read until"
+    info "the timeout even when permissions are fine (observed 2026-11-12:"
+    info "the same probe later pulled 1 MB from cpu2 in S9 with events"
+    info "flowing). Treat this line as informational; it only matters if"
+    info "the engine also fails to read cpu2 while its own events are on."
+fi
 
 # tracing_on write test (write the saved value back = no state change)
 if [ -f "$TR/tracing_on" ]; then
@@ -377,6 +404,27 @@ for _s in kernel/kptr_restrict kernel/dmesg_restrict \
         || lg "$_s = (absent/unreadable)"
 done
 cp "/proc/sys/kernel/kptr_restrict" "$WORK/" 2>/dev/null
+
+# dmesg boot header (dmesg_restrict=0 on this build): the arm64
+# "Virtual kernel memory layout" lines pin the runtime kimage/direct-map
+# ranges, which the offline analysis needs to convert observed runtime
+# call sites into linked-image offsets when kallsyms is zeroed (exactly
+# the 2026-11-12 situation). Long-uptime devices may have rotated the
+# boot lines out of the ring - save whatever is there.
+if command -v dmesg >/dev/null 2>&1; then
+    if dmesg 2>/dev/null | head -n 400 > "$WORK/dmesg_head.txt" && \
+       [ -s "$WORK/dmesg_head.txt" ]; then
+        grep -i -m 40 -e "virtual kernel memory" -e "memory layout" \
+            -e "kimage" -e "Booting Linux on physical CPU" \
+            "$WORK/dmesg_head.txt" > "$WORK/dmesg_layout.txt" 2>/dev/null
+        ok "dmesg boot head saved ($(wc -l < "$WORK/dmesg_head.txt") lines; \
+layout hits: $(wc -l < "$WORK/dmesg_layout.txt" 2>/dev/null || echo 0))"
+    else
+        skip "dmesg empty or unreadable (restricted?)"
+    fi
+else
+    skip "dmesg tool not available"
+fi
 
 # ------------------------------------------------- S6 kallsyms visibility
 sec "S6 kallsyms visibility (symbols the port needs)"
@@ -673,7 +721,13 @@ if [ "$V_RELEASE" = "1" ] && [ "$V_RAW_READ" = "1" ] && \
 fi
 kv "engine_runnable_as_shell=$ENGINE"
 if [ "$ENGINE" = "1" ]; then
-    lg "VERDICT engine: the Shark engine can run from this shell uid"
+    if [ "$V_ROOT_RUN" = "1" ]; then
+        lg "VERDICT engine: RUNNABLE - but measured as ROOT in this run."
+        lg "                 Re-run WITHOUT su to prove the unprivileged"
+        lg "                 shell-uid path the real engine uses."
+    else
+        lg "VERDICT engine: the Shark engine can run from this shell uid"
+    fi
     if [ "$V_KSYM_VISIBLE" = "1" ]; then
         lg "VERDICT derive : PATH A - full constants derivation WITHOUT root"
         lg "                 (kallsyms visible + tracefs writable). Run"
@@ -681,7 +735,10 @@ if [ "$ENGINE" = "1" ]; then
     elif [ "$V_ROOT" = "1" ]; then
         lg "VERDICT derive : PATH B - derivation with temporary root"
         lg "                 (kallsyms hidden but su works). Run"
-        lg "                 ports/x6873/tools/derive-consts.sh under su."
+        lg "                 ports/x6873/tools/derive-consts.sh under su -"
+        lg "                 v2 lifts kptr_restrict=2 by itself (this build"
+        lg "                 zeroes kallsyms even for root, observed in the"
+        lg "                 2026-11-12 bundle: root kallsyms 0/14 visible)."
     else
         lg "VERDICT derive : PATH B-nosu - kallsyms hidden and no su here."
         lg "                 Root the device once (GhostLock), or re-run with"
