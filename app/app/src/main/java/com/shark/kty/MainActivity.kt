@@ -1451,13 +1451,15 @@ class MainActivity : ComponentActivity() {
                             checked = softRebootAfter,
                             onCheckedChange = { updateSoftRebootAfter(it) }
                         )
-                        Divider(startIndent = itemDividerIndent(), color = colors.divider)
-                        SettingSwitchItem(
-                            icon = Icons.Filled.RemoveModerator,
-                            title = "越狱后卸载内核安全防护",
-                            checked = unloadGuard,
-                            onCheckedChange = { updateUnloadGuard(it) }
-                        )
+                        if (exploit != ExploitKind.CVE61157) {
+                            Divider(startIndent = itemDividerIndent(), color = colors.divider)
+                            SettingSwitchItem(
+                                icon = Icons.Filled.RemoveModerator,
+                                title = "越狱后卸载内核安全防护",
+                                checked = unloadGuard,
+                                onCheckedChange = { updateUnloadGuard(it) }
+                            )
+                        }
                         Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     }
                     if (supportsSusfs()) {
@@ -2458,6 +2460,7 @@ class MainActivity : ComponentActivity() {
                     ExploitKind.CVE61223 -> arrayOf("$nativeDir/libk61223.so", "run")
                     ExploitKind.CVE66118 -> arrayOf("$nativeDir/libk66118.so", "run")
                     ExploitKind.CVE66127 -> arrayOf("$nativeDir/libk66127.so", "run")
+                    ExploitKind.CVE61157 -> arrayOf("$nativeDir/libk61157.so", "run")
                     ExploitKind.UNSUPPORTED -> null
                 } ?: run {
                     withContext(Dispatchers.Main) {
@@ -2570,6 +2573,7 @@ class MainActivity : ComponentActivity() {
         CVE61223("CVE-2026-98260-vivo-6.12.23"),
         CVE66118("CVE-2026-98260-6.6.118"),
         CVE66127("CVE-2026-98260-vivo-6.6.127"),
+        CVE61157("CVE-2026-98260-Infinix-6.1.157"),
         UNSUPPORTED("当前机型不支持")
     }
 
@@ -2603,6 +2607,7 @@ class MainActivity : ComponentActivity() {
     private fun supportsSusfs(): Boolean =
         !isGateKernel() && exploit != ExploitKind.CVE66118 &&
             exploit != ExploitKind.CVE66127 &&
+            exploit != ExploitKind.CVE61157 &&
             exploit != ExploitKind.UNSUPPORTED
 
     private fun managerChoices(): List<ManagerKind> =
@@ -2627,6 +2632,7 @@ class MainActivity : ComponentActivity() {
             "6.6.118-android15-8-g9bc34d5b0c79-abogki537459655-4k" to ExploitKind.CVE66118,
             "6.6.118-android15-8-gc4127a25dcf3-ab15863337-4k" to ExploitKind.CVE66118,
             "6.6.127-android15-8-gd489d4ad2a70-abogki567717946-4k" to ExploitKind.CVE66127,
+            "6.1.157-android14-11-ga8b0b542991e-ab15601211" to ExploitKind.CVE61157,
             "6.12.58-android16-6-g690108013dcc-abogki576129896-4k" to ExploitKind.CVE61258,
         )
     }

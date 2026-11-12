@@ -66,6 +66,7 @@ SukiSU Ultra 或 FinaSU 的 root 环境。
 | iQOO Pad Pro 8.8 英寸 | OriginOS 7 | `6.12.58-android16-6-gdd6fd5c98918-abogki543627742-4k` |
 | iQOO Pad6 Pro | OriginOS 7 | `6.12.58-android16-6-gdd6fd5c98918-abogki543627742-4k` |
 | vivo X200 Ultra（PD2454） | OriginOS 7 | `6.6.127-android15-8-gd489d4ad2a70-abogki567717946-4k` |
+| Infinix GT 30 Pro（X6873） | XOS 16 | `6.1.157-android14-11-ga8b0b542991e-ab15601211`（移植中：常量待设备端推导，见 `ports/x6873`） |
 
 6.12.58 OS7（`gdd6fd5c98918` / `g690108013dcc`）与 6.6.127 使用 vivo `hooks_defend`
 加载门旁路。OS7 暂不提供 SUSFS（门的多条白名单未打通），保留管理器热切换；
@@ -171,6 +172,7 @@ Shark/
 ├── ports/coloros-61269/         6.12.69 双 OTA 构建说明与恢复工具
 ├── ports/pkj110-66118/          PKJ110 6.6.118 说明与验证记录
 ├── ports/pd2454-66127/          vivo 6.6.127 说明与验证记录
+├── ports/x6873/                 X6873 说明与设备端常量推导工具
 ├── third_party/                 第三方许可与材料
 ├── NOTICE / LICENSE
 └── README.md
@@ -219,7 +221,7 @@ cargo build --release --target aarch64-linux-android \
     --no-default-features --features k66118
 ```
 
-可用的 feature：`k61269`、`k61238`、`k61258`、`k61223`、`k66118`；
+可用的 feature：`k61269`、`k61238`、`k61258`、`k61223`、`k66118`、`k61157`；
 6.18.21 由 `rust-k61821` 单独构建。
 
 通用 KO 和双 KMI loader 在
