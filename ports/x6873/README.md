@@ -192,18 +192,21 @@ Findings:
   None blocks the derivation; they are engine-stage risk factors on
   race day.
 
-What remains before the first real run: one `derive-consts.sh` v3 run
-under `su` (fills `timer_site` + the five data symbols, re-verifies the
-baked low21s), one unprivileged probe re-run (engine verdict), then
-rebuild + the on-device checklist below.
+What remains before the first real run: one `derive-consts.sh` v4 run
+under `su` (fills `timer_site` + the five data symbols via
+trace/kallsyms-family resolution), one `adb shell` probe run (the
+authoritative engine verdict for uid 2000), then rebuild + the
+on-device checklist below.
 
-First derive/probe run findings (2026-11-12, evening):
+First derive/probe run findings (2026-11-12, evening) — see also run #2 below:
 
 - derive v2 under `su`: `kptr_restrict` lift worked and all three
-  anchors + slab sizes were read, but the mksh 32-bit arithmetic bug
-  zeroed the slide (see the v3 notes above) and the embedded prober
-  failed (`timer_create`); v2 aborted without output. Both are fixed
-  in v3 — the sites no longer depend on the prober.
+  anchors + slab sizes were read, but Android mksh computes `$(( ))`
+  in 32-bit signed ints — v2's `% 4294967296` died with `zero
+  divisor` and the empty slide then compared EQUAL across the anchors
+  (fail-open). v3+ keeps every value as a signed int32 representative
+  of its mod-2^32 class. The embedded prober also failed
+  (`timer_create`); v3+ no longer depends on it for the derivation.
 - probe v1.1 without `su` from the on-device terminal: died with
   `FATAL: no writable work directory` — that terminal's context cannot
   write `/data/local/tmp` (DAC `other` has no write bit there) and the
@@ -213,6 +216,38 @@ First derive/probe run findings (2026-11-12, evening):
   rejected, and notes when the running uid is neither root nor the
   shell uid 2000 (app-domain terminals measure the wrong uid for the
   S4 matrix — prefer `adb shell`).
+
+Second derive run findings (2026-11-12 ~22:00, derive v3) + the
+22:07 probe bundle:
+
+- derive v3 under `su`: the kptr lift, the three-anchor slide pin
+  (0x52A00000, 2 MiB-aligned — int32 arithmetic confirmed working on
+  mksh) and the mandatory-symbol checks all PASSED. It aborted at the
+  v3 site disambiguation: `do_timer_create` is at linked offset
+  `0x193258` and no `0x19feb0`-low21 candidate lies within 16 KiB.
+  That killed the ±16 KiB assumption and motivated v4.
+- Cross-boot combo analysis (offline, from the two bundles + the
+  measured symbol): the 19:58 bundle's runtime funnel/copy sites
+  (0xffffffe0d2d9feb0 / 0xffffffe0d2aac148) differ by exactly
+  `0x2F3D68` mod 2^32, and the linked candidates must satisfy
+  `L_t - L_c = 0x2F3D68` with `L_t = 0x19feb0 + a*2MiB`,
+  `L_c = 0xac148 + b*2MiB` ⇒ `a = b+1`. The k=0 timer candidate
+  (0x19feb0, +51 KiB from `do_timer_create` — the v3 trap) forces
+  `b = -1` (impossible), so the funnel is at `0x39feb0` (a=1, 2 MiB
+  above `do_timer_create` — GKI/LTO function reordering) with the
+  copy site at `0xac148` (b=0, the fork.c cluster). The v4 fallback
+  is expected to land exactly there, enclosed by an
+  `alloc_posix_timer`-family function; the on-device run confirms.
+- probe v1.2 (22:07 bundle, `x6873_probe_20261112_220755`): ran from
+  the MT Manager terminal as `u:r:untrusted_app_30:s0` (uid 10044) —
+  the v1.2 workdir fallback worked (bundle under the app's TMPDIR)
+  and the uid note fired correctly. In that context tracefs is not
+  even VISIBLE (all S4 entries MISSING, not denied) and
+  `kallsyms.root.txt` came back fully zeroed (no `su` grant from that
+  app context). Expected for an untrusted app — but it is NOT the
+  engine's context either: the authoritative engine verdict still
+  needs one probe run from `adb shell` (uid 2000, `u:r:shell:s0`),
+  where tracefs is typically readable/writable on MTK Android 16.
 
 ## Deriving the pending constants
 
@@ -226,45 +261,50 @@ su    # GhostLock temporary root
 sh /data/local/tmp/derive-consts.sh
 ```
 
-What it does (v3):
+What it does (v4):
 
 1. Verifies `uname -r` matches the target release and `/proc/kallsyms`
    is readable.
 2. Pins the KASLR slide by cross-checking the three measured image
    offsets (aborts on mismatch — that would mean a different kernel
-   build).
-3. Extracts `panic_on_warn`, `root_user`, `init_user_ns`,
-   `init_ucounts`, `init_groups` plus `do_timer_create` and
-   `dup_task_struct` from kallsyms (one pass, inside the lifted
-   `kptr_restrict` window) into the port base frame.
-4. Derives the FULL `timer_site` / copy call sites from the
-   `do_timer_create` / `dup_task_struct` linked offsets plus the
-   bundle-baked low21s (`0x19feb0` / `0xac148`): candidates are
-   low21 + k*2MiB and the true site must sit within ±16 KiB of its
-   symbol — at most one candidate can, so the disambiguation is
-   single-shot. A miss aborts (different kernel build).
-5. Confirmation layer, best effort, never aborts on its own: the
-   embedded static arm64 prober (one `timer_create` + one `fork`,
-   pid-filtered trace records) → on failure its `probe.out` is dumped
-   INLINE and a passive 2 s all-pid trace window is tried → baked
-   bundle sizes. If any confirmation trace produces records, their
-   call sites must match the kallsyms-derived sites exactly (abort on
-   disagreement — that is a real inconsistency).
-6. Cross-checks the prefilled `SELINUX_STATE_STATIC` against kallsyms.
-7. Prints the ready-to-paste profile block for `K61157_plant.c` and
-   the slab defines for the `X6873_61157` branch of `plant_core.inc`,
-   with the provenance of each value in the comments.
+   build), then prints EVERYTHING kallsyms-only up front (slide,
+   `do_timer_create` / `dup_task_struct` linked offsets, the five data
+   symbols, selinux delta) — so even a later abort leaves a usable
+   console.
+3. Reads the slab sizes from `/proc/slabinfo`.
+4. Trace window (primary site source): the embedded static prober
+   (best effort — it failed on both device runs so far with a bare
+   `PROBE_TIMER_FAIL`, no errno compiled in; its output is dumped
+   inline on failure), then a passive 3 s all-pid window with forced
+   fork churn from the script itself. Any `kmem_cache_alloc` record
+   with the right `bytes_req` gives the exact call site — symbol form
+   (`sym+0xNN/0xMM`, resolved against a kallsyms copy taken inside
+   the lifted `kptr_restrict` window), `0x…` form, or bare 16-hex
+   form (kernel pointer printing carries no `0x`), all via the
+   pinned slide. The low21 must match the bundle-baked value (build
+   identity gate); fresh `bytes_alloc` must match the bundle.
+5. Kallsyms enclosing-function fallback (when no trace record):
+   candidates `low21 + k*2MiB` inside `[_text, _etext]`; for each,
+   the enclosing function comes from the kallsyms copy (windowed
+   scan, ~fast); a site is accepted ONLY when exactly ONE candidate's
+   enclosing symbol matches the known family (timer:
+   `*timer_create*` / `*posix_timer*` / `*alloc_posix*`; copy:
+   `*dup_task*` / `*copy_process*` / `*alloc_task*` / `*task_struct*`).
+   Ambiguous or empty aborts with a full candidate dump for offline
+   analysis. Trace and fallback must agree when both resolve.
+6. Prints the ready-to-paste profile block with per-site provenance
+   (source: trace/family, enclosing symbol) and the slab defines.
 
-v3 exists because the first real-device run of v2 failed twice on
-2026-11-12: (a) Android mksh computes `$(( ))` in 32-bit signed ints,
-   so v2's `% 4294967296` died with `zero divisor` and — worse — the
-   empty slide then compared EQUAL across all three anchors and v2
-   failed OPEN (the printed selinux delta of -36026400 was exactly
-   this bug); v3 keeps every value as a signed int32 representative
-   (mod-2^32 exact, no 2^32 literals, every derived value validated as
-   a real integer). (b) the embedded prober failed on-device with an
-   opaque `timer_create failed` — v3 no longer depends on it for the
-   derivation at all.
+Why v4 exists (device run #2, 2026-11-12 ~22:00): v3's slide pin
+WORKED on device (three anchors agreed, 2 MiB-aligned — the mksh
+int32 fix is proven), but its site disambiguation assumed the
+posix-timer alloc site sits within ±16 KiB of `do_timer_create`.
+The device run measured `do_timer_create` at linked offset
+`0x193258` and aborted: no candidate with low21 `0x19feb0` within
+16 KiB. Cross-boot analysis (below) shows the assumption was
+structurally wrong — the funnel is 2 MiB away. v4 replaces the
+proximity assumption with trace-primary + enclosing-family
+resolution.
 
 Then rebuild the runner and the app:
 
