@@ -317,6 +317,29 @@ cd app && ./gradlew :app:assembleRelease
 The pending guard in `K61157_plant.c` flips off automatically once every
 field is non-zero.
 
+### Verifying the derive console offline (analysis side)
+
+When a v4 console arrives, run `tools/verify-derive-v4.sh` over it
+before pasting anything:
+
+```sh
+tools/verify-derive-v4.sh <console.txt> [kallsyms-copy]
+```
+
+It re-parses every constant mechanically, checks each value against
+the cross-boot predictions (timer `0x39feb0`, copy `0xac148`,
+`L_t - L_c = 0x2F3D68`, the k=0 trap `0x19feb0` exclusion,
+`do_timer_create` `0x193258`), verifies single-slide consistency
+(3-anchor agreement and an independent candidate-uniqueness ladder
+when the kept kallsyms copy is supplied), diffs the paste block
+against the console lines, and emits the canonical profile row itself
+on success. Exit codes: `0` VERIFIED (paste the emitted row) · `2`
+INCOMPLETE (usable subset, gaps listed — pending data symbols or an
+aborted site resolution) · `1` FAILED (a hard check violated — the
+evidence contradicts the cross-boot model; do not paste). The tool is
+mock-hardened on the analysis side (`scripts/mock-verify-test.sh`,
+six synthetic console/kallsyms scenarios, 48 assertions).
+
 ## On-device verification checklist
 
 1. Run `tools/probe-x6873.sh` (see "Probe first"); confirm the engine
