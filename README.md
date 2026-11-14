@@ -1,15 +1,15 @@
-<h1 align="center"><img src="docs/images/app-icon.png" width="56" height="56" align="absmiddle" alt="Shark"> Shark</h1>
+<h1 align="center"><img src="docs/images/app-icon.png" width="56" height="56" align="absmiddle" alt="GT30 Lab"> GT30 Lab</h1>
 
 <p align="center"><b>多机型 Android 一键临时 Root 与管理器切换工具</b></p>
 
+<p align="center"><sub>Preserved research fork — upstream removed from public. Port work for Infinix GT 30 Pro (X6873 / MT6897): see <code>ports/x6873/</code>. Licensing & attribution: <a href="LICENSE">LICENSE</a>, <a href="NOTICE">NOTICE</a>.</sub></p>
+
 <p align="center">
-  <a href="https://github.com/Yunnijian/Shark/releases/tag/v2.0"><img src="docs/badges/release.svg" alt="Release"></a>
   <a href="LICENSE"><img src="docs/badges/license.svg" alt="License"></a>
   <img src="docs/badges/android.svg" alt="Android">
   <img src="docs/badges/kotlin.svg" alt="Kotlin">
   <img src="docs/badges/compose.svg" alt="Compose">
   <img src="docs/badges/kernel.svg" alt="Kernel">
-  <a href="https://gitee.com/puci1/Shark/releases/tag/v2.0"><img src="docs/badges/gitee.svg" alt="Gitee"></a>
 </p>
 
 Shark 支持 OnePlus、OPPO、Realme、iQOO 等设备，不用解锁 BL，起手只需要
