@@ -81,9 +81,9 @@ Sources: `GL` = GhostLock X6873 kernel profile for this exact release
 | `task_struct.real_cred` | `0x830` (2096) | GL | reference |
 | `SELINUX_STATE_STATIC` | `0xffffffc08225b827` (= enforcing `0x225b820` + base + 7) | GL | final (script re-verifies) |
 | cred layout (`caps 0x30 ×5`, `security 0x80`, `user 0x88`, `user_ns 0x90`, `ucounts 0x98`, `group_info 0xa0`) | matches engine template | GL 6.x credential template | final |
-| `TIMER_SITE_LOW21` | `0x19feb0` (139/139 timer allocs, 15 pids, one site) | P | final (prober re-verifies) |
-| `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster) | P | final (prober re-verifies) |
-| `STATIC_TIMER_SITE` | — | D | pending (runtime site seen `0xffffffe0d2d9feb0`; frame pin needs the derive run) |
+| `TIMER_SITE_LOW21` | ~~`0x19feb0`~~ RETIRED v4.1 — it is the FILP funnel low21 (`__alloc_file+0x2c`, 142×320B events, 15 pids; zero 264B-req events in that capture). Re-measure: the true posix-timers site sits inside `do_timer_create` | P | re-measure (v4.1 window gate) |
+| `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster; re-confirmed 2026-11-14 by kallsyms enclosing `dup_task_struct+0x54` ×2 boots) | P | final (prober re-verifies) |
+| `STATIC_TIMER_SITE` | — (expected inside `do_timer_create` `[0x193258, 0x193858)`; sibling ports land at `+0x94..0xb8`) | D | pending (the 2026-11-14 "measured" `0xffffffe0d2d9feb0` was the filp funnel — misattribution, see the funnel note) |
 | `PANIC_ON_WARN_STATIC` | — | D | pending |
 | `ROOT_USER_STATIC` | — | D | pending |
 | `INIT_USER_NS_STATIC` | — | D | pending |
@@ -235,9 +235,15 @@ Second derive run findings (2026-11-12 ~22:00, derive v3) + the
   (0x19feb0, +51 KiB from `do_timer_create` — the v3 trap) forces
   `b = -1` (impossible), so the funnel is at `0x39feb0` (a=1, 2 MiB
   above `do_timer_create` — GKI/LTO function reordering) with the
-  copy site at `0xac148` (b=0, the fork.c cluster). The v4 fallback
-  is expected to land exactly there, enclosed by an
-  `alloc_posix_timer`-family function; the on-device run confirms.
+  copy site at `0xac148` (b=0, the fork.c cluster).
+  **v4.1 CORRECTION (2026-11-14, lifted kallsyms + capture re-read):
+  this analysis was WRONG.** The 19:58 "139 timer allocs from 15
+  pids" were 320B **filp** events at `__alloc_file+0x2c` (linked
+  `0x39feb0`) — the GhostLock file-spray funnel, not posix timers
+  (that capture contains ZERO 264B-req events). `0x39feb0` and the
+  `0x2F3D68` delta describe the filp funnel; the true posix_timers
+  site is inside `do_timer_create` (sibling ports: `+0x94..0xb8`).
+  The v4.1 derive gates the site on the do_timer_create window.
 - probe v1.2 (22:07 bundle, `x6873_probe_20261112_220755`): ran from
   the MT Manager terminal as `u:r:untrusted_app_30:s0` (uid 10044) —
   the v1.2 workdir fallback worked (bundle under the app's TMPDIR)
@@ -273,11 +279,13 @@ What it does (v4):
    console.
 3. Reads the slab sizes from `/proc/slabinfo`.
 4. Trace window (primary site source): the embedded static prober
-   (best effort — it failed on both device runs so far with a bare
-   `PROBE_TIMER_FAIL`, no errno compiled in; its output is dumped
-   inline on failure), then a passive 3 s all-pid window with forced
-   fork churn from the script itself. Any `kmem_cache_alloc` record
-   with the right `bytes_req` gives the exact call site — symbol form
+   (**v4.1: its timer_create syscall number is FIXED — it called 222,
+   the x86_64 number, which is mmap on arm64; every run failed with a
+   bare `PROBE_TIMER_FAIL`. Now nr 107, patched in the embedded blob
+   and disassembly-verified**), then a passive 3 s all-pid window
+   with forced fork churn from the script itself. Any
+   `kmem_cache_alloc` record with the right `bytes_req` gives the
+   exact call site — symbol form
    (`sym+0xNN/0xMM`, resolved against a kallsyms copy taken inside
    the lifted `kptr_restrict` window), `0x…` form, or bare 16-hex
    form (kernel pointer printing carries no `0x`), all via the
@@ -327,9 +335,11 @@ tools/verify-derive-v4.sh <console.txt> [kallsyms-copy]
 ```
 
 It re-parses every constant mechanically, checks each value against
-the cross-boot predictions (timer `0x39feb0`, copy `0xac148`,
-`L_t - L_c = 0x2F3D68`, the k=0 trap `0x19feb0` exclusion,
-`do_timer_create` `0x193258`), verifies single-slide consistency
+the v4.1 expectations (timer site inside the `do_timer_create`
+window, copy `0xac148`, the filp-funnel low21 `0x19feb0` exclusion,
+`do_timer_create` `0x193258`; the old `0x39feb0`/`0x2F3D68`
+predictions are retired as filp-funnel facts), verifies
+single-slide consistency
 (3-anchor agreement and an independent candidate-uniqueness ladder
 when the kept kallsyms copy is supplied), diffs the paste block
 against the console lines, and emits the canonical profile row itself

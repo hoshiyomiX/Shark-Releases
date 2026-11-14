@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# verify-derive-v4.sh — offline verifier for a derive-consts.sh v4 console
+# verify-derive-v4.sh — offline verifier for a derive-consts.sh v4/v4.1 console
 # (Infinix GT 30 Pro / X6873, Shark CVE-2026-98260 port).
+#
+# v4.1 (2026-11-14): prediction semantics corrected after the lifted
+# kallsyms (bundle #4) + the 19:58-capture re-read. The 19:58 "139 timer
+# allocs from 15 pids" were 320B filp events at __alloc_file+0x2c (linked
+# 0x39feb0) — the GhostLock file-spray funnel, NOT posix timers. The old
+# PRED_TIMER_OFF 0x39feb0 and the L_t-L_c=0x2F3D68 invariant both describe
+# that filp funnel and are RETIRED as timer facts. The true posix_timers
+# alloc site sits inside do_timer_create (sibling ports: +0x94..0xb8):
+# D2 is now a do_timer_create-window check, D3/D4 guard against the filp
+# misattribution, D11 is informational only, and the H4 ladder runs on the
+# CONSOLE timer-site low21 (not the retired bake).
 #
 # Purpose: the moment the on-device derive-consts.sh v4 console arrives,
 # run it through this tool to (a) parse every constant mechanically,
@@ -23,10 +34,15 @@ set -u
 
 # ------------------------------------------------------------------ consts
 RELEASE_EXPECTED="6.1.157-android14-11-ga8b0b542991e-ab15601211"
-PRED_D_TIMER=$((0x193258))     # do_timer_create linked (run #2, boot-invariant)
-PRED_TIMER_OFF=$((0x39feb0))   # timer call site, combo a=1 (k=1)
-PRED_COPY_OFF=$((0xac148))     # copy call site,  combo b=0 (k=0)
-PRED_LT_LC=$((0x2F3D68))       # L_t - L_c cross-boot invariant
+PRED_D_TIMER=$((0x193258))     # do_timer_create linked (run #2, boot-invariant;
+                               # kallsyms-confirmed 2026-11-14)
+# RETIRED v4.1: PRED_TIMER_OFF 0x39feb0 was the FILP funnel (__alloc_file+0x2c),
+# not a timer site. Timer identity is now the do_timer_create window (D2):
+DTC_WINDOW=$((1536))           # do_timer_create [start, start+0x600)
+PRED_COPY_OFF=$((0xac148))     # copy call site,  combo b=0 (k=0) — CONFIRMED
+                               # (trace x2 boots + kallsyms enclosing)
+PRED_LT_LC=$((0x2F3D68))       # RETIRED as a timer invariant: this is the
+                               # GhostLock FILP-funnel delta (informational only)
 BAKE_TIMER_LOW21=$((0x19feb0))
 BAKE_COPY_LOW21=$((0xac148))
 TRAP_TIMER_OFF=$((0x19feb0))   # the k=0 candidate that killed derive v3
@@ -115,8 +131,10 @@ fi
 parse_site() { # $1=line var name -> prints "addr|low21|enc|src"
     local ln; eval "ln=\$$1"
     [ -n "$ln" ] || { echo ""; return; }
-    printf '%s\n' "$ln" | grep -oE '0x[0-9a-f]+ \(low21 0x[0-9a-f]+ matches bundle; enclosing [^;]+; source (trace|family)\)$' \
-        | sed 's/ (low21 /|/; s/ matches bundle; enclosing /|/; s/; source /|/; s/)$//' || echo ""
+    # v4.1: "matches bundle" is optional (the timer low21 bake is retired;
+    # the copy line still carries it)
+    printf '%s\n' "$ln" | grep -oE '0x[0-9a-f]+ \(low21 0x[0-9a-f]+( matches bundle)?; enclosing [^;]+; source (trace|family)\)$' \
+        | sed 's/ (low21 /|/; s/ matches bundle; enclosing /|/; s/; enclosing /|/; s/; source /|/; s/)$//' || echo ""
 }
 ts_parse=$(parse_site ts_line); cs_parse=$(parse_site cs_line)
 ts_addr=""; ts_low21=""; ts_enc=""; ts_src=""
@@ -183,12 +201,19 @@ frame_check C9 "$cs_addr" "copy site    "; OFF_CS=$FC_OFF
     || bad D1 "do_timer_create $(hx $D_TIMER) != run#2 measured $(hx $PRED_D_TIMER)"; }
 
 if [ -n "$OFF_TS" ]; then
-    [ "$OFF_TS" -eq "$PRED_TIMER_OFF" ] && ok D2 "timer site == predicted 0x39feb0 (combo a=1)" \
-        || bad D2 "timer site $(hx $OFF_TS) != predicted $(hx $PRED_TIMER_OFF)"
-    [ "$OFF_TS" -ne "$TRAP_TIMER_OFF" ] && ok D3 "timer site is NOT the k=0 trap 0x19feb0 (v3 killer)" \
-        || bad D3 "timer site IS the k=0 trap 0x19feb0 — v3's impossible combo"
-    [ $(( OFF_TS & 0x1fffff )) -eq "$BAKE_TIMER_LOW21" ] && ok D4 "timer low21 == bundle 0x19feb0" \
-        || bad D4 "timer low21 $(hx $(( OFF_TS & 0x1fffff ))) != bundle $(hx $BAKE_TIMER_LOW21)"
+    # v4.1: the timer site must sit inside do_timer_create — the low21 bake
+    # (0x19feb0) and the 0x39feb0 prediction both belong to the filp funnel
+    if [ -n "$D_TIMER" ]; then
+        if [ "$OFF_TS" -ge "$D_TIMER" ] && [ "$OFF_TS" -lt $(( D_TIMER + DTC_WINDOW )) ]; then
+            ok D2 "timer site $(hx $OFF_TS) inside do_timer_create (+$(hx $(( OFF_TS - D_TIMER ))))"
+        else
+            bad D2 "timer site $(hx $OFF_TS) OUTSIDE do_timer_create [$(hx $D_TIMER), $(hx $(( D_TIMER + DTC_WINDOW )))) — filp-funnel misattribution?"
+        fi
+    else skip D2 "do_timer_create not in console — window check unavailable"; fi
+    [ "$OFF_TS" -ne "$TRAP_TIMER_OFF" ] && ok D3 "timer site is NOT the filp-funnel low21 grid 0x19feb0 (v4.1: old 'k=0 trap' = __alloc_file funnel low21)" \
+        || bad D3 "timer site IS 0x19feb0 — the FILP funnel low21 (__alloc_file+0x2c at k=1); misattributed filp events, not posix timers"
+    [ $(( OFF_TS & 0x1fffff )) -ne "$BAKE_TIMER_LOW21" ] && ok D4 "timer low21 $(hx $(( OFF_TS & 0x1fffff ))) != retired filp bake 0x19feb0" \
+        || bad D4 "timer low21 equals the retired filp bake 0x19feb0 — filp misattribution"
     case "$ts_enc" in
         *timer_create*|*posix_timer*|*alloc_posix*) ok D5 "timer enclosing '$ts_enc' matches the family" ;;
         "") skip D5 "no timer enclosing printed" ;;
@@ -214,8 +239,11 @@ else INCOMPLETE_REASON="${INCOMPLETE_REASON:+$INCOMPLETE_REASON; }copy site unre
 
 if [ -n "$OFF_TS" ] && [ -n "$OFF_CS" ]; then
     d=$(( (OFF_TS - OFF_CS) % 0x100000000 )); [ "$d" -lt 0 ] && d=$(( d + 0x100000000 ))
-    [ "$d" -eq "$PRED_LT_LC" ] && ok D11 "L_t - L_c = $(hx $d) == cross-boot invariant 0x2F3D68" \
-        || bad D11 "L_t - L_c = $(hx $d) != 0x2F3D68"
+    if [ "$d" -eq "$PRED_LT_LC" ]; then
+        warn D11 "L_t - L_c = 0x2F3D68 — that is the GHOSTLOCK filp-funnel delta, NOT a timer invariant (v4.1: informational)"
+    else
+        ok D11 "L_t - L_c = $(hx $d) (the 0x2F3D68 filp-funnel invariant is no longer asserted — v4.1)"
+    fi
 fi
 
 # ------------------------------------------------- E. data symbol checks
@@ -368,18 +396,24 @@ if [ -n "$KSYMS" ] && [ -f "$KSYMS" ]; then
                     printf "LADDER %d %d %s\n", cnt, uniq, umatch
                 }' "$KSYMS"
         }
-        echo "  -- timer candidates (low21 $(hx $BAKE_TIMER_LOW21)) --"
-        lad_t=$(ladder $BAKE_TIMER_LOW21 'timer_create|posix_timer|alloc_posix' timer)
-        echo "$lad_t" | grep -E '^  cand' | sed 's/^/ /'
-        t_cnt=$(echo "$lad_t" | grep -oE '^LADDER [0-9]+' | grep -oE '[0-9]+')
-        t_uniq=$(echo "$lad_t" | grep -oE '^LADDER [0-9]+ [0-9]+' | awk '{print $3}')
-        if [ "$t_cnt" = "1" ]; then
-            [ "$t_uniq" -eq "$PRED_TIMER_OFF" ] && ok H4 "timer ladder: unique family candidate == predicted $(hx $PRED_TIMER_OFF)" \
-                || bad H4 "timer ladder unique candidate $(hx $t_uniq) != predicted $(hx $PRED_TIMER_OFF)"
-        elif [ -z "$t_cnt" ] || [ "$t_cnt" = "0" ]; then
-            bad H4 "timer ladder: no family candidate inside the text window"
+        if [ -n "$OFF_TS" ]; then
+            ts_lo21=$(( OFF_TS & 0x1fffff ))
+            echo "  -- timer candidates (console site low21 $(hx $ts_lo21)) --"
+            lad_t=$(ladder $ts_lo21 'timer_create|posix_timer|alloc_posix' timer)
+            echo "$lad_t" | grep -E '^  cand' | sed 's/^/ /'
+            t_cnt=$(echo "$lad_t" | grep -oE '^LADDER [0-9]+' | grep -oE '[0-9]+')
+            t_uniq=$(echo "$lad_t" | grep -oE '^LADDER [0-9]+ [0-9]+' | awk '{print $3}')
+            if [ "$t_cnt" = "1" ]; then
+                [ "$t_uniq" -eq "$OFF_TS" ] && ok H4 "timer ladder on console low21: unique family candidate == console site $(hx $OFF_TS)" \
+                    || bad H4 "timer ladder unique candidate $(hx $t_uniq) != console site $(hx $OFF_TS)"
+            elif [ -z "$t_cnt" ] || [ "$t_cnt" = "0" ]; then
+                bad H4 "console timer-site grid has NO family candidate inside the text window — enclosing mismatch?"
+            else
+                bad H4 "timer ladder: $t_cnt family candidates — ambiguous"
+            fi
         else
-            bad H4 "timer ladder: $t_cnt family candidates — ambiguous, derive v4 would abort"
+            echo "  -- timer candidates (no console site — ladder skipped) --"
+            skip H4 "no console timer site — ladder not applicable (v4.1)"
         fi
         echo "  -- copy candidates (low21 $(hx $BAKE_COPY_LOW21)) --"
         lad_c=$(ladder $BAKE_COPY_LOW21 'dup_task|copy_process|alloc_task|task_struct' copy)
@@ -394,9 +428,8 @@ if [ -n "$KSYMS" ] && [ -f "$KSYMS" ]; then
         else
             bad H5 "copy ladder: $c_cnt family candidates — ambiguous"
         fi
-        # trap evidence: what encloses the k=0 timer candidate
-        trap_enc=$(echo "$lad_t" | grep -E '^  cand k=0' | sed 's/.*enclosing //')
-        [ -n "$trap_enc" ] && note "k=0 timer candidate (0x19feb0) enclosed by: $trap_enc"
+        # (v4.1: the old k=0-trap note is gone - the ladder now runs on the
+        # console site's own grid, so its k=0 is the console site itself)
     fi
 elif [ -n "$KSYMS" ]; then
     warn H0 "kallsyms argument '$KSYMS' is not a readable file"
