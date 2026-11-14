@@ -1,0 +1,95 @@
+Third-party components
+======================
+
+Project license
+---------------
+Self-written code in this repository (App, exploit wrappers, build scripts)
+is licensed under GPL-3.0 (see LICENSE). Third-party components below keep
+their own licenses. The vendored kernel-module sources susfs4ksu-lkm and
+hybridmount, and the ko binaries built from them, remain GPL-2.0 as separate
+components.
+
+Supported managers (not bundled)
+--------------------------------
+KernelSU, KernelSU Next, FinaSU, BakaSU and SukiSU Ultra are supported as
+externally installed managers. The App executes the ksud payload from the
+user-installed manager APK in place. The only bundled KSU-side binary is
+libksud_universal.so, the optional late-load loader for the universal
+profile-switch module described in entry 9.
+
+1. CVE-2026-98260 OnePlus 16 (PYB110) temporary root kit
+   Source: https://github.com/AzirX1337/CVE-2026-98260-OnePlus16-PYB110-Jailbreak
+   License: MIT
+   Used: background and flow reference for the 98260 branch. The bundled
+         t98260 single-entry binary is built from exploit/rust-t98260 plus
+         the C plant in exploit/src in this repository and shipped as
+         lib/arm64-v8a/libt98260.so. License text:
+         third_party/cve-2026-98260-LICENSES/AzirX1337-MIT.txt
+
+2. Shizuku API
+   Source: https://github.com/RikkaApps/Shizuku-API
+   License: Apache-2.0
+   Used: remote process execution.
+
+3. SUSFS guard LKM (susfs4ksu-lkm)
+   Source: https://github.com/inforcqb/susfs4ksu-lkm (baseline b69dee4, rebased to 28b2e85)
+   License: GPL-2.0 (full text: lkm/susfs4ksu-lkm/LICENSE)
+   Used: vendored SUSFS loadable kernel module source under
+         lkm/susfs4ksu-lkm/. Local modifications for BTI kernels are listed in
+         lkm/susfs4ksu-lkm/MODIFICATIONS.md. The 6.18 build is shipped as
+         lib/arm64-v8a/libsusfs_guard_lkm.so and the 6.12 build as
+         lib/arm64-v8a/libsusfs_guard_lkm_612.so; both are loaded in place
+         from nativeLibraryDir.
+
+4. YuKongA/CVE-2026-98260
+   Source: https://github.com/YuKongA/CVE-2026-98260
+   License: MIT (upstream license added 2026-11-12; copyright (c) 2026
+            YuKongA and woshigenm; full text:
+            third_party/cve-2026-98260-LICENSES/YuKongA-MIT.txt)
+   Used: timer UAF trigger and reclaim flow adapted from the 6.12.69-ex
+         branch's timer.c, tuned and shipped through the per-kernel runners
+         built from exploit/src/plant_core.inc: libk61269.so (6.12.69),
+         libk61238.so (6.12.38), libk61258.so (6.12.58), libk61223.so
+         (6.12.23), libk66118.so (6.6.118) and libk66127.so (6.6.127).
+
+5. Stellar (Shizuku fork) / Stellar API SDK
+   Source: https://github.com/roro2239/Stellar (manager),
+           https://github.com/roro2239/Stellar-API (SDK, JitPack com.github.roro2239:Stellar-API:1.0.3)
+   License: MPL-2.0 (Stellar modifications) / Apache-2.0 (Shizuku base code).
+   Used: privileged backend preferred at runtime (StellarProvider + roro.stellar API);
+         Shizuku (entry 2) remains the fallback backend.
+
+6. COUI-Kit
+   Source: https://github.com/ItosEO/COUI-Kit
+   License: MPL-2.0 (full text: app/src/main/assets/licenses/MPL-2.0.txt)
+   Used: UI component and effect library since v2.0
+         (io.github.itoseo:coui:0.0.1-alpha7).
+
+7. Hybrid Mount (VFS provider LKM)
+   Source: https://github.com/Hybrid-Mount/meta-hybrid_mount (VFS module,
+           fork of https://github.com/maxsteeel/nomount)
+   License: GPL-2.0-only (full text: lkm/hybridmount/LICENSE)
+   Used: vendored VFS provider kernel module source under lkm/hybridmount/,
+         built for GKI 6.18.21 by lkm/build-hybridmount.sh and shipped as
+         lib/arm64-v8a/libhybridmount.so (loaded only when the optional
+         "VFS 支持" switch is on). Import baseline and divergences are listed
+         in lkm/hybridmount/PROVENANCE.
+
+8. AboutLibraries
+    Source: https://github.com/mikepenz/AboutLibraries
+    License: Apache-2.0
+    Used: Gradle plugin and core library that generate and parse the
+          dependency/license metadata shown on the in-app "开放源代码许可"
+          screen (com.mikepenz:aboutlibraries-core:15.2.0).
+
+9. Universal KSU profile-switch loader (libksud_universal.so)
+    Source: built from SukiSU Ultra v4.3.0-r1 (commit 0a4c3132)
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra
+    License: GPL-3.0 (full text: app/src/main/assets/licenses/GPL-3.0.txt)
+    Used: optional 6.12 / 6.18 dual-KMI late-load loader that embeds the universal LKM
+          with KernelSU / KernelSU-Next / BakaSU / SukiSU / FinaSU profile
+          tables. Local modifications and build steps are documented in the
+          KSU-Universal project README. The manager APKs' own ksud binaries
+          remain external (see "Supported managers" above).
+
+The application icon is drawn by this project.
