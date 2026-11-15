@@ -691,3 +691,58 @@ hist:` (the full call-site histogram), `[slide] anchor … ok=…` lines,
 `setresgid(0)=0` / `setuid(0)=0` → `[2/4]` late-load. All seven
 plant_core engines pass `gcc -fsyntax-only`; the k61157 host build plus
 `ports/x6873/tools/test_derive_slide.c` (19 assertions, field vectors; build: `gcc -D_GNU_SOURCE -pthread -I exploit/src -o /tmp/t ports/x6873/tools/test_derive_slide.c `scripts/test_derive_slide.c` (19 assertions, field vectors)`scripts/test_derive_slide.c` (19 assertions, field vectors) /tmp/t`) all pass.
+
+## Field-fix record: 2026-11-15 16:28 wake-path BUG_ON (fake_uid repair restored)
+
+Fourth field run (16:28, CI build `4d82822`) validated the slide fix
+completely: all three anchors agreed on `slide=0x1a9b600000` (votes=3)
+in both rounds, the selinux zero-write round completed for the first
+time (`free_seen=1 burst hit=1 after 29ms` -> `reaped` ->
+`write mode=zero target=0xffffffdb1d85b820`, canonical), and
+`panic_on_warn` read 0 (no stage needed). The log ends at
+"cred writes landed, waking child" with no child line after it and the
+next boot shows `BOOT_REASON=kernel_panic` - the kernel died at the
+wake.
+
+Root cause - a design flaw introduced by the decoy commit (`69f0c62`),
+triggered by its own child-side normalization:
+
+- The decoy encoding leaves the fake cred's `uid/gid` = the node
+  address and removed the kernel-side `fake_uid` repair plant, planning
+  for the woken child to run `setuid(0)` instead ("full caps, before
+  anything else").
+- But the fake-cred task runs with `task->cred` = the fake cred while
+  `task->real_cred` still points at the original shell cred, and every
+  `set*id()` goes through `commit_creds()`, which opens with
+  `BUG_ON(task->cred != old)` - an unconditional kernel panic on this
+  path. The pre-decoy chain never called `set*id()` in the fake child,
+  so the flaw lay dormant until this run reached the wake for the first
+  time.
+
+Fix (`exploit/src/plant_core.inc`):
+
+1. **`fake_uid` repair plant restored** (kernel-side): after the
+   panic_on_warn stage, one zero-mode write to `A+8` zeroes uid/gid in
+   the fake cred, making it a complete uid-0 credential before the
+   wake - exactly the pre-decoy mechanism, retargeted from the overlaid
+   node to the separate decoy cred (`fc.A + CRED_UID_OFF`).
+2. **No `set*id()` in the fake child anymore** (the panic): the child
+   reports, late-loads and parks without ever mutating its creds. The
+   `system()` fork for late-load gets a consistent copy
+   (`copy_creds` -> `prepare_creds` copies `task->cred` and gives the
+   forked task `cred == real_cred`), so the root work in the forked
+   child may call `set*id` safely.
+3. The parent's success check is now `uid == 0 && euid == 0` (a failed
+   repair can no longer pass as "euid 0 with garbage uid").
+4. `derive_slide()` tie-break cosmetics: on full ties the winner stays
+   the anchor with the most records instead of flipping to the last
+   candidate (the 16:28 log showed "votes=3 (task n=1)").
+
+Expected log on the next clean-boot run: round 1 (fake_cred) and round
+2 (selinux) as in the 16:28 run, then `stage panic_on_warn` only if the
+sysctl reads 1, then the NEW `stage fake_uid target=<A+8> mode=zero`
+round, then `[child] woke uid=0 euid=0`, `[+] child report ...`,
+`PLANT_CRED_OK`, `PARKED=1`, `[fake] child ... late-load then park`,
+`LATE_LOAD_CMD=...` and the runner's `[2/4]` -> `MODULE_LOADED` ->
+`[3/4]` -> `[4/4] DONE`. All seven engines pass `gcc -fsyntax-only`;
+the slide unit test (19 assertions) still passes.
