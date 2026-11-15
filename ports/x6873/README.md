@@ -2,15 +2,17 @@
 
 ## Status
 
-**Scaffolding, fail-closed — constants partially derived.** The X6873
-chain is wired end to end (runner feature, plant, app integration). The
-2026-11-12 on-device probe bundle filled the low21 call-site constants
-and all three slab size pairs (see "Probe results" below); the KASLR
-slide pinned static addresses (`timer_site` and the five data symbols)
-still need one `tools/derive-consts.sh` run under `su` (v2 handles this
-build's `kptr_restrict=2` itself). Until they are pasted in, the plant
-refuses to start and prints `PORT_61157_PENDING` instead of touching
-the kernel.
+**Constants FINAL — port complete on the constants side (2026-11-15).**
+The X6873 chain is wired end to end (runner feature, plant, app
+integration) and the profile row in `K61157_plant.c` is fully
+populated. Every per-build constant was derived OFFLINE by static
+parsing of three stock boot.img images (live-slot dump + SF
+16.3.0.150SP09 + SF 16.3.0.160SP02): the kernel Image is byte-identical
+across all three, so the constants are stable with zero drift between
+firmware versions, and the 12/12 on-device baseline cross-check
+(2026-11-12 measurements) matched exactly. The fail-closed guard stays
+in the plant for future rows: an incomplete profile still refuses to
+run and prints `PORT_61157_PENDING` instead of touching the kernel.
 
 Engine compatibility is **not yet proven on 6.1** — see the caveat at the
 bottom. This port follows the same posix-cpu-timers engine as the 6.18 /
@@ -59,10 +61,11 @@ entries:
    at the fake cred in the reclaimed order-1 page.
 3. Zero `selinux_state.enforcing` (image offset `0x225b820`, measured —
    the plant constant stores `+7` per the engine's `-7` write).
-4. Clear `panic_on_warn` (address pending derivation).
+4. Clear `panic_on_warn` (`0xffffffc08200ae0c` + slide).
 5. Fix the fake cred's `user/user_ns/ucounts/group_info` fields to point
    at `root_user` / `init_user_ns` / `init_ucounts` / `init_groups`
-   (addresses pending derivation; struct offsets `0x88/0x90/0x98/0xa0`
+   (`0xffffffc082030780` / `0xffffffc0820304f0` / `0xffffffc082032008` /
+   `0xffffffc082031aa0`, each + slide; struct offsets `0x88/0x90/0x98/0xa0`
    already match the 6.1 credential template).
 6. Wake the root child, run `ksud late-load` for the selected manager.
 
@@ -71,8 +74,11 @@ entries:
 Sources: `GL` = GhostLock X6873 kernel profile for this exact release
 (measured on device, 33/33 boots), `P` = offline analysis of the
 2026-11-12 probe bundle (`x6873_probe_20261112_195833`, build
-`301500018`, slot `_b`), `D` = pending on-device derivation via
-`tools/derive-consts.sh`.
+`301500018`, slot `_b`), `S` = static parse of the stock boot.img
+kernel Image (2026-11-15, three images, zero drift; pipeline:
+`tools/extract_kernel.py` + `tools/parse_x6873_stock.py`), `D` =
+on-device derivation via `tools/derive-consts.sh` (alternative route,
+still useful for a future firmware).
 
 | Constant | Value | Source | Status |
 |---|---|---|---|
@@ -81,14 +87,14 @@ Sources: `GL` = GhostLock X6873 kernel profile for this exact release
 | `task_struct.real_cred` | `0x830` (2096) | GL | reference |
 | `SELINUX_STATE_STATIC` | `0xffffffc08225b827` (= enforcing `0x225b820` + base + 7) | GL | final (script re-verifies) |
 | cred layout (`caps 0x30 ×5`, `security 0x80`, `user 0x88`, `user_ns 0x90`, `ucounts 0x98`, `group_info 0xa0`) | matches engine template | GL 6.x credential template | final |
-| `TIMER_SITE_LOW21` | ~~`0x19feb0`~~ RETIRED v4.1 — it is the FILP funnel low21 (`__alloc_file+0x2c`, 142×320B events, 15 pids; zero 264B-req events in that capture). Re-measure: the true posix-timers site sits inside `do_timer_create` | P | re-measure (v4.1 window gate) |
-| `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster; re-confirmed 2026-11-14 by kallsyms enclosing `dup_task_struct+0x54` ×2 boots) | P | final (prober re-verifies) |
-| `STATIC_TIMER_SITE` | — (expected inside `do_timer_create` `[0x193258, 0x193858)`; sibling ports land at `+0x94..0xb8`) | D | pending (the 2026-11-14 "measured" `0xffffffe0d2d9feb0` was the filp funnel — misattribution, see the funnel note) |
-| `PANIC_ON_WARN_STATIC` | — | D | pending |
-| `ROOT_USER_STATIC` | — | D | pending |
-| `INIT_USER_NS_STATIC` | — | D | pending |
-| `INIT_UCOUNTS_STATIC` | — | D | pending |
-| `INIT_GROUPS_STATIC` | — | D | pending |
+| `TIMER_SITE_LOW21` | `0x193300` — the true posix-timers site (bl `kmem_cache_alloc` at `do_timer_create+0xa4`, site `+0xa8`; bl `0x1932fc`). The ~~`0x19feb0`~~ filp-funnel low21 (`__alloc_file+0x2c`) stays retired (v4.1 correction) | S | final |
+| `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster; re-confirmed 2026-11-14 by kallsyms enclosing `dup_task_struct+0x54` ×2 boots; static parse agrees) | P/S | final |
+| `STATIC_TIMER_SITE` | `0xffffffc08193300` (= base `0xffffffc080000000` + linked `0x193300`, inside `do_timer_create` `[0x193258, 0x193858)` — exactly the sibling `+0x94..0xb8` band; bl `0x1932fc` → `kmem_cache_alloc`) | S | final |
+| `PANIC_ON_WARN_STATIC` | `0xffffffc08200ae0c` (linked `0x200ae0c`) | S | final |
+| `ROOT_USER_STATIC` | `0xffffffc082030780` (linked `0x2030780`) | S | final |
+| `INIT_USER_NS_STATIC` | `0xffffffc0820304f0` (linked `0x20304f0`) | S | final |
+| `INIT_UCOUNTS_STATIC` | `0xffffffc082032008` (linked `0x2032008`) | S | final |
+| `INIT_GROUPS_STATIC` | `0xffffffc082031aa0` (linked `0x2031aa0`) | S | final |
 | `TIMER_REQ` / `TIMER_ALLOC` | `0x108` / `0x140` (139 events) | P | final |
 | `CRED_REQ` / `CRED_ALLOC` | `0xb0` / `0xc0` (65 events) | P | final |
 | `TASK_ALLOC_BYTES` / `TASK_ALLOC_PADDED` | `0x12c0` / `0x12c0` (29 events) | P | final |
@@ -105,6 +111,38 @@ derive script pins the slide against the three GhostLock-measured image
 offsets (`init_task` / `init_cred` / `root_task_group`) and emits every
 derived symbol in the same `0xffffffc080000000` frame. The script aborts
 if the three anchors do not agree.
+
+### Static parse route (the source of the final constants)
+
+The constants above were derived offline from the stock boot.img, not
+on the device. The pipeline now lives in `tools/`:
+
+1. `tools/extract_kernel.py <boot.img> <out.bin>` — Android boot image
+   v0-v4 (optional MTK pre-header), gzip/lz4/zstd/raw kernels; verifies
+   the arm64 Image magic `ARMd` at +0x38. X6873 stock images are
+   ANDROID v4 with an lz4-legacy kernel (magic `0x184C2102`).
+2. `tools/parse_x6873_stock.py parse <out.bin> <out.json>` — anchored
+   kallsyms discovery (this build's `kallsyms_relative_base` is
+   `0xffffffc008000000`, NOT the `0xffffffc080000000` needle recover.py
+   searches for, and ~300 KB of foreign .rodata sits between names and
+   markers, so the recover.py walk-back fails on this build — the
+   anchored scan finds the strictly-nondecreasing s32 offset array
+   instead), a full BL-scan call map of `do_timer_create` /
+   `copy_process` / `dup_task_struct`, and BTF struct sizes via
+   `ports/v2505a/recover.py`.
+3. `tools/parse_x6873_stock.py diff <a.json> <b.json> [out.json]` —
+   STABLE/DIFFERS verdict per constant across two firmware versions.
+
+Evidence (2026-11-15): three stock images (live-slot + SF 150SP09 + SF
+160SP02) yield a byte-identical kernel Image (sha256
+`ca8f54a3c8f3570fd02549281060e12d436f131ce08dc2825978f154fcf70ee0`,
+35,637,760 bytes) — 15/15 constants STABLE, zero drift between
+16.3.0.150SP09 and 16.3.0.160SP02; 12/12 device-measured baseline
+constants matched exactly. The KASLR slide on the reference device is
+`0x2052a00000` under the `0xffffffc080000000` convention frame
+(`0x20caa00000` against the true static base `0xffffffc008000000`);
+both are 2 MiB-aligned and offsets are slide-invariant, so the plant
+constants do not change either way.
 
 ## Probe first (step 0)
 
@@ -192,11 +230,10 @@ Findings:
   None blocks the derivation; they are engine-stage risk factors on
   race day.
 
-What remains before the first real run: one `derive-consts.sh` v4 run
-under `su` (fills `timer_site` + the five data symbols via
-trace/kallsyms-family resolution), one `adb shell` probe run (the
-authoritative engine verdict for uid 2000), then rebuild + the
-on-device checklist below.
+What remains before the first real run: nothing on the constants side —
+they are final (static parse above). Remaining: one `adb shell` probe
+run (the authoritative engine verdict for uid 2000), then rebuild +
+the on-device checklist below.
 
 First derive/probe run findings (2026-11-12, evening) — see also run #2 below:
 
