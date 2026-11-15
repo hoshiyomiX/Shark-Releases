@@ -2700,7 +2700,7 @@ class MainActivity : ComponentActivity() {
      * (libghostlock.so) with a plain ProcessBuilder inside the app sandbox,
      * feed it the bundled GLK1 profile, and let its root child run the
      * manager ksud late-load. No privileged backend involved. */
-    private fun runGhostlockDirect(softReboot: Boolean): Pair<Int, Boolean> {
+    private suspend fun runGhostlockDirect(softReboot: Boolean): Pair<Int, Boolean> {
         val profileAsset = appDirectProfile()
         if (profileAsset == null || !appDirectEngineInstalled()) {
             addLog("App-direct engine or profile missing for $kernelVersion")
