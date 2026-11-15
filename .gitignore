@@ -34,3 +34,6 @@ ports/v2505a/**/*.py[cod]
 ports/v2505a/tools/vendor/
 
 exploit/target/
+
+# Python tool caches
+__pycache__/
