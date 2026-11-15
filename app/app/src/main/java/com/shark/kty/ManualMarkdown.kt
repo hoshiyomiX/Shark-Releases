@@ -187,8 +187,8 @@ internal fun markdownInline(text: String, codeBackground: Color): AnnotatedStrin
         }
     }
 
-/* COUI Text 只接受纯文本；带 SpanStyle 的 Markdown 片段使用 Foundation BasicText，
- * 并复用 COUI 的排版角色与主题色。 */
+/* COUI Text takes plain text only; Markdown fragments with SpanStyle use Foundation BasicText,
+ * reusing COUI typography roles and theme colors. */
 @Composable
 private fun MdText(
     text: AnnotatedString,

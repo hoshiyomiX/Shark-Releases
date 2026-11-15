@@ -196,36 +196,36 @@ private data class LocalLicense(
 
 private val localLicenses = listOf(
     LocalLicense(
-        "Shark（本项目）",
-        "项目自研代码",
+        "Shark (this project)",
+        "First-party code",
         "GPL-3.0",
         "licenses/GPL-3.0.txt",
         "https://www.gnu.org/licenses/gpl-3.0.html"
     ),
     LocalLicense(
         "NOTICE",
-        "第三方来源、署名与声明",
+        "Third-party sources, attribution and notices",
         "NOTICE",
         "licenses/NOTICE.txt",
         null
     ),
     LocalLicense(
         "SUSFS guard / Hybrid Mount",
-        "随 App 分发的内核模块",
+        "Kernel modules shipped with the app",
         "GPL-2.0",
         "licenses/GPL-2.0.txt",
         "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"
     ),
     LocalLicense(
         "AzirX1337 CVE-2026-98260",
-        "MIT 许可的参考实现",
+        "MIT-licensed reference implementation",
         "MIT",
         "licenses/MIT.txt",
         "https://github.com/AzirX1337/CVE-2026-98260-OnePlus16-PYB110-Jailbreak"
     ),
     LocalLicense(
         "YuKongA CVE-2026-98260",
-        "MIT 许可的参考实现",
+        "MIT-licensed reference implementation",
         "MIT",
         "licenses/MIT.txt",
         "https://github.com/YuKongA/CVE-2026-98260"
@@ -252,9 +252,9 @@ class MainActivity : ComponentActivity() {
     private var ksuActive by mutableStateOf(false)
     private var exploit by mutableStateOf(ExploitKind.UNSUPPORTED)
     private var manager by mutableStateOf(ManagerKind.KERNELSU)
-    private var kernelVersion by mutableStateOf("未知")
-    private var deviceModel by mutableStateOf("未知")
-    private var selinuxText by mutableStateOf("未知")
+    private var kernelVersion by mutableStateOf("Unknown")
+    private var deviceModel by mutableStateOf("Unknown")
+    private var selinuxText by mutableStateOf("Unknown")
     private var antiRootGuard by mutableStateOf(true)
     private var softRebootAfter by mutableStateOf(false)
     private var unloadGuard by mutableStateOf(true)
@@ -338,7 +338,7 @@ class MainActivity : ComponentActivity() {
 
     private fun checkForUpdatesManually() {
         if (updateDownloading) return
-        Toast.makeText(this, "正在检查更新…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Checking for updates…", Toast.LENGTH_SHORT).show()
         lifecycleScope.launch {
             when (val result = runCatching {
                 UpdateChecker.check(applicationContext)
@@ -350,10 +350,10 @@ class MainActivity : ComponentActivity() {
                     updateDialogVisible = true
                 }
                 UpdateCheckResult.UpToDate -> {
-                    Toast.makeText(this@MainActivity, "已是最新版本", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Already up to date", Toast.LENGTH_SHORT).show()
                 }
                 else -> {
-                    Toast.makeText(this@MainActivity, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Update check failed, try again later", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -375,7 +375,7 @@ class MainActivity : ComponentActivity() {
             runCatching { DroidspacesModule.latest() }
                 .onSuccess { droidspacesRelease = it }
                 .onFailure {
-                    droidspacesError = it.message ?: "获取最新 release 失败"
+                    droidspacesError = it.message ?: "Failed to fetch the latest release"
                 }
             droidspacesLoading = false
         }
@@ -395,14 +395,14 @@ class MainActivity : ComponentActivity() {
             }.onSuccess {
                 droidspacesSavedPath = it
             }.onFailure {
-                droidspacesError = it.message ?: "下载失败"
+                droidspacesError = it.message ?: "Download failed"
             }
             droidspacesDownloading = false
         }
     }
 
     private fun formatSize(bytes: Long): String = when {
-        bytes <= 0 -> "未知大小"
+        bytes <= 0 -> "Unknown size"
         bytes >= 1024 * 1024 -> "%.2f MB".format(bytes / 1024.0 / 1024.0)
         else -> "%.0f KB".format(bytes / 1024.0)
     }
@@ -438,7 +438,7 @@ class MainActivity : ComponentActivity() {
         vfsSupport = getSharedPreferences("pyb110", MODE_PRIVATE).getBoolean("vfs_support", false)
         val savedManager = getSharedPreferences("pyb110", MODE_PRIVATE).getString("manager", null)
         manager = runCatching { ManagerKind.valueOf(savedManager ?: "") }.getOrDefault(ManagerKind.KERNELSU)
-        kernelVersion = runCatching { android.system.Os.uname().release }.getOrDefault("未知")
+        kernelVersion = runCatching { android.system.Os.uname().release }.getOrDefault("Unknown")
         exploit = PROFILE_BY_RELEASE[kernelVersion] ?: ExploitKind.UNSUPPORTED
         if (manager == ManagerKind.DYNAMIC && !supportsUniversal()) {
             manager = ManagerKind.KERNELSU
@@ -476,10 +476,10 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier.fillMaxSize(),
             topBar = {
                 when {
-                    showExtras -> AppTopBar("拓展功能", onBack = { showExtras = false })
-                    showManual -> AppTopBar("使用手册", onBack = { showManual = false })
+                    showExtras -> AppTopBar("Extras", onBack = { showExtras = false })
+                    showManual -> AppTopBar("User manual", onBack = { showManual = false })
                     tab == AppTab.ABOUT && aboutPage == AboutPage.LICENSES ->
-                        AppTopBar("开放源代码许可", onBack = { aboutPage = AboutPage.HOME })
+                        AppTopBar("Open-source licenses", onBack = { aboutPage = AboutPage.HOME })
                     else -> AppTopBar(if (tab == AppTab.HOME) "Shark" else tab.label)
                 }
             },
@@ -563,7 +563,7 @@ class MainActivity : ComponentActivity() {
     private fun CouiBackButton(onBack: () -> Unit) {
         if (Build.VERSION.SDK_INT >= 34) {
             TopAppBarButton(onClick = onBack) {
-                AppIcon(CouiIcons.Back, "返回", Modifier.size(24.dp))
+                AppIcon(CouiIcons.Back, "Back", Modifier.size(24.dp))
             }
         } else {
             val dark = CouiTheme.isDark
@@ -574,7 +574,7 @@ class MainActivity : ComponentActivity() {
                     .clip(CouiShape(24.dp, 2f))
                     .couiButtonFeedback(dark, source, true)
                     .clickable(source, indication = null, role = Role.Button, onClick = onBack)
-                    .semantics { contentDescription = "返回" },
+                    .semantics { contentDescription = "Back" },
                 contentAlignment = Alignment.Center
             ) {
                 AppIcon(CouiIcons.Back, null, Modifier.size(24.dp))
@@ -605,7 +605,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /* API 33 上底栏浮动材质不可用，使用同一套 COUI 配色的平铺栏位。 */
+    /* On API 33 the bottom-bar floating material is unavailable; use a flat bar with the same COUI palette. */
     @Composable
     private fun PlainBottomBar(selected: AppTab, onSelect: (AppTab) -> Unit) {
         val dark = CouiTheme.isDark
@@ -674,8 +674,8 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 统一设置行：图标 + 标题 + 可选摘要 + 尾部内容。
-     * onClick 为空的行走只读装配，交互由尾部控件负责。
+     * Unified setting row: icon + title + optional summary + trailing content.
+     * Rows without onClick are read-only assemblies; interaction is handled by the trailing control.
      */
     @Composable
     private fun SettingItem(
@@ -803,22 +803,22 @@ class MainActivity : ComponentActivity() {
         val accent = scheme.accent
         val confirm = when {
             droidspacesDownloading -> CouiDialogAction(
-                text = "下载中 ${(droidspacesProgress * 100).toInt()}%",
+                text = "Downloading ${(droidspacesProgress * 100).toInt()}%",
                 onClick = {},
                 enabled = false
             )
             droidspacesLoading -> CouiDialogAction(
-                text = "关闭",
+                text = "Close",
                 onClick = { droidspacesDialogVisible = false }
             )
             release == null -> CouiDialogAction(
-                text = "重试",
+                text = "Retry",
                 onClick = { loadDroidspacesRelease() },
                 style = CouiDialogActionStyle.Primary,
                 colors = CouiDialogDefaults.primaryActionColors(accent)
             )
             savedPath != null -> CouiDialogAction(
-                text = "打开 KernelSU",
+                text = "Open KernelSU",
                 onClick = {
                     droidspacesDialogVisible = false
                     launchManager()
@@ -827,18 +827,18 @@ class MainActivity : ComponentActivity() {
                 colors = CouiDialogDefaults.primaryActionColors(accent)
             )
             else -> CouiDialogAction(
-                text = "下载",
+                text = "Download",
                 onClick = { downloadDroidspacesModule() },
                 style = CouiDialogActionStyle.Primary,
                 colors = CouiDialogDefaults.primaryActionColors(accent)
             )
         }
         val dismiss = if (droidspacesDownloading || droidspacesLoading) null else {
-            CouiDialogAction(text = "关闭", onClick = { droidspacesDialogVisible = false })
+            CouiDialogAction(text = "Close", onClick = { droidspacesDialogVisible = false })
         }
         Dialog(
             onDismissRequest = { if (!droidspacesDownloading) droidspacesDialogVisible = false },
-            title = "Droidspaces 模块",
+            title = "Droidspaces module",
             confirmAction = confirm,
             dismissAction = dismiss,
             visible = droidspacesDialogVisible
@@ -850,20 +850,20 @@ class MainActivity : ComponentActivity() {
             ) {
                 when {
                     droidspacesLoading -> Text(
-                        text = "正在获取最新 release…",
+                        text = "Fetching the latest release…",
                         kind = CouiTextKind.Body,
                         color = scheme.onSurfaceVariant,
                         textAlign = TextAlign.Start
                     )
                     release == null -> Text(
-                        text = droidspacesError ?: "获取最新 release 失败",
+                        text = droidspacesError ?: "Failed to fetch the latest release",
                         kind = CouiTextKind.Body,
                         color = scheme.onSurfaceVariant,
                         textAlign = TextAlign.Start
                     )
                     else -> {
                         Text(
-                            text = "最新版本 ${release.version}",
+                            text = "Latest version ${release.version}",
                             kind = CouiTextKind.PreferenceTitle,
                             color = scheme.onSurface,
                             textAlign = TextAlign.Start
@@ -877,10 +877,10 @@ class MainActivity : ComponentActivity() {
                         )
                         Spacer(Modifier.height(12.dp))
                         if (savedPath == null) {
-                            DialogBody(release.changelog.ifBlank { "无更新说明" })
+                            DialogBody(release.changelog.ifBlank { "No changelog provided" })
                         } else {
                             Text(
-                                text = "已保存到：",
+                                text = "Saved to: ",
                                 kind = CouiTextKind.PreferenceSummary,
                                 color = scheme.onSurfaceVariant,
                                 textAlign = TextAlign.Start
@@ -898,7 +898,7 @@ class MainActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "请到 KernelSU 管理器 → 模块 → 安装，选择该文件刷入。",
+                                text = "Flash it from the KernelSU manager: Modules → Install, then pick the saved file.",
                                 kind = CouiTextKind.Body,
                                 color = scheme.onSurface,
                                 textAlign = TextAlign.Start
@@ -916,7 +916,7 @@ class MainActivity : ComponentActivity() {
                         if (droidspacesDownloading) {
                             Spacer(Modifier.height(12.dp))
                             Text(
-                                text = "正在下载 ${(droidspacesProgress * 100).toInt()}%",
+                                text = "Downloading ${(droidspacesProgress * 100).toInt()}%",
                                 kind = CouiTextKind.Body,
                                 color = scheme.onSurface,
                                 textAlign = TextAlign.Start
@@ -932,7 +932,7 @@ class MainActivity : ComponentActivity() {
 
     private fun installApk(file: File): Boolean {
         if (!packageManager.canRequestPackageInstalls()) {
-            Toast.makeText(this, "请允许安装未知应用后再次点击安装", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Allow installing unknown apps, then tap Install again", Toast.LENGTH_LONG).show()
             runCatching {
                 startActivity(
                     Intent(
@@ -952,7 +952,7 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
             true
         }.getOrElse {
-            updateError = "无法启动安装器：${it.message}"
+            updateError = "Could not launch the installer: ${it.message}"
             false
         }
     }
@@ -967,12 +967,12 @@ class MainActivity : ComponentActivity() {
         val accent = scheme.accent
         Dialog(
             onDismissRequest = { if (!updateDownloading) updateDialogVisible = false },
-            title = "发现新版本 ${info.version}",
+            title = "New version ${info.version} available",
             confirmAction = CouiDialogAction(
                 text = when {
-                    updateDownloading -> "下载中 ${(updateProgress * 100).toInt()}%"
-                    pendingApk != null -> "安装"
-                    else -> "立即更新"
+                    updateDownloading -> "Downloading ${(updateProgress * 100).toInt()}%"
+                    pendingApk != null -> "Install"
+                    else -> "Update now"
                 },
                 onClick = {
                     val ready = pendingApk
@@ -990,13 +990,13 @@ class MainActivity : ComponentActivity() {
                             result.onSuccess { file ->
                                 if (!UpdateChecker.verifySignature(context, file)) {
                                     file.delete()
-                                    updateError = "安装包签名与当前应用不一致"
+                                    updateError = "APK signature mismatch with the installed app"
                                 } else {
                                     pendingApk = file
                                     if (installApk(file)) updateDialogVisible = false
                                 }
                             }.onFailure {
-                                updateError = it.message ?: "下载失败"
+                                updateError = it.message ?: "Download failed"
                             }
                         }
                     }
@@ -1006,7 +1006,7 @@ class MainActivity : ComponentActivity() {
                 colors = CouiDialogDefaults.primaryActionColors(accent)
             ),
             dismissAction = CouiDialogAction(
-                text = "稍后",
+                text = "Later",
                 onClick = { updateDialogVisible = false },
                 enabled = !updateDownloading
             ),
@@ -1018,7 +1018,7 @@ class MainActivity : ComponentActivity() {
                     .padding(horizontal = CouiDialogDefaults.contentPadding)
             ) {
                 Text(
-                    text = "当前 ${BuildConfig.VERSION_NAME}  ·  来源 ${info.source}",
+                    text = "Current ${BuildConfig.VERSION_NAME}  ·  Source ${info.source}",
                     kind = CouiTextKind.PreferenceSummary,
                     color = scheme.onSurfaceVariant,
                     textAlign = TextAlign.Start
@@ -1026,7 +1026,7 @@ class MainActivity : ComponentActivity() {
                 if (updateDownloading) {
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        text = "正在下载 ${(updateProgress * 100).toInt()}%",
+                        text = "Downloading ${(updateProgress * 100).toInt()}%",
                         kind = CouiTextKind.Body,
                         color = scheme.onSurface,
                         textAlign = TextAlign.Start
@@ -1035,7 +1035,7 @@ class MainActivity : ComponentActivity() {
                     CouiProgressBar(updateProgress)
                 } else {
                     Spacer(Modifier.height(12.dp))
-                    DialogBody(info.changelog.ifBlank { "无更新说明" })
+                    DialogBody(info.changelog.ifBlank { "No changelog provided" })
                     updateError?.let {
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -1044,7 +1044,7 @@ class MainActivity : ComponentActivity() {
                             color = Color(0xFFD32F2F),
                             textAlign = TextAlign.Start
                         )
-                        DialogLink("打开浏览器下载") { uriHandler.openUri(info.pageUrl) }
+                        DialogLink("Open in browser to download") { uriHandler.openUri(info.pageUrl) }
                     }
                 }
             }
@@ -1057,9 +1057,9 @@ class MainActivity : ComponentActivity() {
         val accent = CouiTheme.colorScheme.accent
         Dialog(
             onDismissRequest = { showDonate = false },
-            title = "支持开发者",
+            title = "Support the developer",
             confirmAction = CouiDialogAction(
-                text = "关闭",
+                text = "Close",
                 onClick = { showDonate = false },
                 style = CouiDialogActionStyle.Primary,
                 colors = CouiDialogDefaults.primaryActionColors(accent)
@@ -1076,12 +1076,12 @@ class MainActivity : ComponentActivity() {
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     DonateQr(
-                        label = "微信赞赏",
+                        label = "WeChat donation",
                         assetPath = "donate/wechat.png",
                         modifier = Modifier.weight(1f)
                     )
                     DonateQr(
-                        label = "支付宝",
+                        label = "Alipay",
                         assetPath = "donate/alipay.png",
                         modifier = Modifier.weight(1f)
                     )
@@ -1143,7 +1143,7 @@ class MainActivity : ComponentActivity() {
             onDismissRequest = { aboutLicense = null },
             title = item.name,
             confirmAction = CouiDialogAction(
-                text = "关闭",
+                text = "Close",
                 onClick = { aboutLicense = null },
                 style = CouiDialogActionStyle.Primary,
                 colors = CouiDialogDefaults.primaryActionColors(accent)
@@ -1166,7 +1166,7 @@ class MainActivity : ComponentActivity() {
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                             if (contents.isEmpty()) {
                                 Text(
-                                    text = "未声明许可证文本",
+                                    text = "No license text declared",
                                     kind = CouiTextKind.Body,
                                     color = scheme.onSurface,
                                     textAlign = TextAlign.Start
@@ -1181,7 +1181,7 @@ class MainActivity : ComponentActivity() {
                                         textAlign = TextAlign.Start
                                     )
                                     BasicText(
-                                        text = body ?: "未内置许可证文本",
+                                        text = body ?: "No bundled license text",
                                         style = rememberCouiTextStyle(CouiTextKind.Body).copy(
                                             fontFamily = FontFamily.Monospace,
                                             fontSize = 12.sp,
@@ -1194,7 +1194,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 item.website?.let { url ->
-                    DialogLink("访问主页") { uriHandler.openUri(url) }
+                    DialogLink("Visit homepage") { uriHandler.openUri(url) }
                 }
             }
         }
@@ -1249,15 +1249,15 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column {
                         Text(
-                            text = if (granted) "$backendName 已授权" else "$backendName 未授权",
+                            text = if (granted) "$backendName authorized" else "$backendName not authorized",
                             kind = CouiTextKind.PageTitle,
                             color = colors.title,
                             textAlign = TextAlign.Start
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = if (granted) "已连接到 $backendName，可尝试越狱"
-                            else "未连接到 $backendName，请授予权限",
+                            text = if (granted) "Connected to $backendName — ready to jailbreak"
+                            else "Not connected to $backendName — grant permission first",
                             kind = CouiTextKind.Body,
                             color = colors.title,
                             textAlign = TextAlign.Start
@@ -1283,11 +1283,11 @@ class MainActivity : ComponentActivity() {
     private fun PrimaryActionCard() {
         val colors = CouiPageDefaults.themeColors()
         val label = when {
-            busy -> "运行中…"
-            !binderReady -> "Stellar 未运行（点击打开）"
-            !authorized -> "授权 Shizuku"
-            ksuActive -> "校验 / 再次越狱"
-            else -> "一键越狱"
+            busy -> "Running…"
+            !binderReady -> "Stellar not running (tap to open)"
+            !authorized -> "Authorize Shizuku"
+            ksuActive -> "Verify / jailbreak again"
+            else -> "One-tap jailbreak"
         }
         Group {
             Item(
@@ -1321,7 +1321,7 @@ class MainActivity : ComponentActivity() {
         Group {
             DropdownItem(
                 icon = Icons.Filled.Tag,
-                title = "ROOT管理器",
+                title = "ROOT manager",
                 values = managerChoices(),
                 selected = manager,
                 label = { it.fullLabel }
@@ -1329,15 +1329,15 @@ class MainActivity : ComponentActivity() {
             Divider(startIndent = itemDividerIndent())
             SettingItem(
                 icon = Icons.Filled.Tune,
-                title = "拓展功能",
+                title = "Extras",
                 onClick = { showExtras = true },
                 trailing = { Chevron() }
             )
             Divider(startIndent = itemDividerIndent())
             SettingItem(
                 icon = Icons.Filled.MenuBook,
-                title = "使用手册",
-                summary = "首次使用、功能说明与异常处理",
+                title = "User manual",
+                summary = "First use, feature notes and troubleshooting",
                 onClick = { showManual = true },
                 trailing = { Chevron() }
             )
@@ -1398,15 +1398,15 @@ class MainActivity : ComponentActivity() {
     ) {
         val colors = CouiPageDefaults.themeColors()
         Group {
-            SettingItem(Icons.Filled.DeveloperBoard, "内核版本", summary = kernelVersion)
+            SettingItem(Icons.Filled.DeveloperBoard, "Kernel version", summary = kernelVersion)
             Divider(startIndent = itemDividerIndent(), color = colors.divider)
-            SettingItem(Icons.Filled.BugReport, "漏洞利用方式", summary = exploitLabel)
+            SettingItem(Icons.Filled.BugReport, "Exploit method", summary = exploitLabel)
             Divider(startIndent = itemDividerIndent(), color = colors.divider)
-            SettingItem(Icons.Filled.Smartphone, "设备型号", summary = deviceModel)
+            SettingItem(Icons.Filled.Smartphone, "Device model", summary = deviceModel)
             Divider(startIndent = itemDividerIndent(), color = colors.divider)
-            SettingItem(Icons.Filled.Fingerprint, "系统指纹", summary = fingerprint)
+            SettingItem(Icons.Filled.Fingerprint, "System fingerprint", summary = fingerprint)
             Divider(startIndent = itemDividerIndent(), color = colors.divider)
-            SettingItem(Icons.Filled.Security, "SELinux 状态", summary = selinux)
+            SettingItem(Icons.Filled.Security, "SELinux state", summary = selinux)
         }
     }
 
@@ -1440,14 +1440,14 @@ class MainActivity : ComponentActivity() {
                     if (!isVivoV2505a() && exploit != ExploitKind.UNSUPPORTED) {
                         SettingSwitchItem(
                             icon = Icons.Filled.NotificationsOff,
-                            title = "越狱后禁用安全弹窗",
+                            title = "Suppress security popups after jailbreak",
                             checked = antiRootGuard,
                             onCheckedChange = { updateAntiRootGuard(it) }
                         )
                         Divider(startIndent = itemDividerIndent(), color = colors.divider)
                         SettingSwitchItem(
                             icon = Icons.Filled.RestartAlt,
-                            title = "越狱后软重启",
+                            title = "Soft reboot after jailbreak",
                             checked = softRebootAfter,
                             onCheckedChange = { updateSoftRebootAfter(it) }
                         )
@@ -1455,7 +1455,7 @@ class MainActivity : ComponentActivity() {
                             Divider(startIndent = itemDividerIndent(), color = colors.divider)
                             SettingSwitchItem(
                                 icon = Icons.Filled.RemoveModerator,
-                                title = "越狱后卸载内核安全防护",
+                                title = "Unload the kernel security guard after jailbreak",
                                 checked = unloadGuard,
                                 onCheckedChange = { updateUnloadGuard(it) }
                             )
@@ -1465,7 +1465,7 @@ class MainActivity : ComponentActivity() {
                     if (supportsSusfs()) {
                         SettingSwitchItem(
                             icon = Icons.Filled.Extension,
-                            title = "SUSFS 支持",
+                            title = "SUSFS support",
                             checked = susfsSupport,
                             onCheckedChange = { updateSusfsSupport(it) }
                         )
@@ -1474,7 +1474,7 @@ class MainActivity : ComponentActivity() {
                         Divider(startIndent = itemDividerIndent(), color = colors.divider)
                         SettingSwitchItem(
                             icon = Icons.Filled.AccountTree,
-                            title = "VFS 支持",
+                            title = "VFS support",
                             checked = vfsSupport,
                             onCheckedChange = { updateVfsSupport(it) }
                         )
@@ -1483,7 +1483,7 @@ class MainActivity : ComponentActivity() {
                         Divider(startIndent = itemDividerIndent(), color = colors.divider)
                         DropdownItem(
                             icon = Icons.Filled.SwapHoriz,
-                            title = "管理器热切换",
+                            title = "Manager hot switch",
                             values = hotManagerChoices(),
                             selected = hotManager,
                             label = { it.fullLabel }
@@ -1510,13 +1510,13 @@ class MainActivity : ComponentActivity() {
                     Group {
                         SettingItem(
                             icon = Icons.Filled.Extension,
-                            title = "Droidspaces 支持",
-                            summary = "下载最新的 droidspaces_lkm 模块，保存到 Download/Shark，之后到 KernelSU 管理器刷入。"
+                            title = "Droidspaces support",
+                            summary = "Download the latest droidspaces_lkm module into Download/Shark, then flash it from the KernelSU manager."
                         )
                         Divider(startIndent = itemDividerIndent(), color = colors.divider)
                         SettingItem(
                             icon = Icons.Filled.Download,
-                            title = "下载模块",
+                            title = "Download module",
                             onClick = { openDroidspacesDialog() },
                             trailing = { Chevron() }
                         )
@@ -1534,7 +1534,7 @@ class MainActivity : ComponentActivity() {
         val markdown = remember {
             runCatching {
                 context.assets.open("manual.md").bufferedReader().use { it.readText() }
-            }.getOrElse { "# 使用手册\n\n手册内容读取失败。" }
+            }.getOrElse { "# User manual\n\nFailed to read the manual." }
         }
         val blocks = remember(markdown) { parseManualMarkdown(markdown) }
         val codeBackground = CouiTheme.colorScheme.onSurface.copy(alpha = 0.08f)
@@ -1566,7 +1566,7 @@ class MainActivity : ComponentActivity() {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "暂无日志",
+                    text = "No logs yet",
                     kind = CouiTextKind.Body,
                     color = scheme.onSurfaceVariant
                 )
@@ -1610,7 +1610,7 @@ class MainActivity : ComponentActivity() {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "暂无记录",
+                    text = "No records yet",
                     kind = CouiTextKind.Body,
                     color = scheme.onSurfaceVariant
                 )
@@ -1660,7 +1660,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /* 条目右侧滑出导出操作；卡片本体使用 COUI 卡片配色与列表按压反馈。 */
+    /* The export action slides in from the item's right edge; the card body uses COUI card colors with list press feedback. */
     @Composable
     private fun HistoryEntryCard(entry: HistoryEntry, onClick: () -> Unit, onExport: () -> Unit) {
         val scheme = CouiTheme.colorScheme
@@ -1701,7 +1701,7 @@ class MainActivity : ComponentActivity() {
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(text = "导出", kind = CouiTextKind.PreferenceTitle, color = scheme.onAccent)
+                        Text(text = "Export", kind = CouiTextKind.PreferenceTitle, color = scheme.onAccent)
                     }
                 }
             }
@@ -1833,12 +1833,12 @@ class MainActivity : ComponentActivity() {
             onDismissRequest = onDismiss,
             title = "${displayEntry.startTime}  ${displayEntry.manager}",
             confirmAction = CouiDialogAction(
-                text = "确定",
+                text = "OK",
                 onClick = onDismiss,
                 style = CouiDialogActionStyle.Primary,
                 colors = CouiDialogDefaults.primaryActionColors(scheme.accent)
             ),
-            dismissAction = CouiDialogAction(text = "删除", onClick = onDelete),
+            dismissAction = CouiDialogAction(text = "Delete", onClick = onDelete),
             visible = entry != null
         ) {
             Column(
@@ -1849,7 +1849,7 @@ class MainActivity : ComponentActivity() {
                 SelectionContainer {
                     Box(modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
                         BasicText(
-                            text = text.ifEmpty { "暂无日志" },
+                            text = text.ifEmpty { "No logs yet" },
                             style = rememberCouiTextStyle(CouiTextKind.Body).copy(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 13.sp,
@@ -1894,7 +1894,7 @@ class MainActivity : ComponentActivity() {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 runCatching {
-                    startActivity(Intent.createChooser(send, "导出日志"))
+                    startActivity(Intent.createChooser(send, "Export logs"))
                 }.onFailure { addLog("Failed to open share sheet: $it") }
             }
         }
@@ -1903,11 +1903,11 @@ class MainActivity : ComponentActivity() {
     private fun historyValue(e: HistoryEntry): String {
         val dur = e.durationMs?.let { String.format(java.util.Locale.US, "%.1fs", it / 1000.0) }
         return when {
-            e.result == "SUCCESS" && dur != null -> "成功 $dur"
-            e.result == "SUCCESS" -> "成功"
-            e.result == "FAIL" && dur != null -> "失败 $dur"
-            e.result == "FAIL" -> "失败"
-            else -> "进行中"
+            e.result == "SUCCESS" && dur != null -> "Success $dur"
+            e.result == "SUCCESS" -> "Success"
+            e.result == "FAIL" && dur != null -> "Failed $dur"
+            e.result == "FAIL" -> "Failed"
+            else -> "In progress"
         }
     }
 
@@ -1994,7 +1994,7 @@ class MainActivity : ComponentActivity() {
                         onClick = { aboutPage = AboutPage.LICENSES }
                     ) {
                         Text(
-                            text = "App 图标由本项目绘制；第三方组件版权归各自作者所有，完整许可见「开放源代码许可」。",
+                            text = "The app icon is drawn by this project; third-party components belong to their respective authors. Full licenses under \"Open-source licenses\".",
                             kind = CouiTextKind.PreferenceSummary,
                             color = colors.title,
                             textAlign = TextAlign.Start
@@ -2006,48 +2006,48 @@ class MainActivity : ComponentActivity() {
                 Group {
                     SettingItem(
                         icon = Icons.Filled.Code,
-                        title = "查看源代码",
-                        summary = "在 GitHub 上查看源代码",
+                        title = "View source code",
+                        summary = "View the source on GitHub",
                         onClick = { uriHandler.openUri(PROJECT_URL) },
                         trailing = { Chevron() }
                     )
                     Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     SettingItem(
                         icon = Icons.Filled.Forum,
-                        title = "加入社区",
-                        summary = "加入 QQ 群",
+                        title = "Join the community",
+                        summary = "Join the QQ group",
                         onClick = { uriHandler.openUri("https://qm.qq.com/q/HMg4ngAC8W") },
                         trailing = { Chevron() }
                     )
                     Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     SettingItem(
                         icon = Icons.Filled.BugReport,
-                        title = "问题反馈",
-                        summary = "在 GitHub Issues 提交问题",
+                        title = "Report an issue",
+                        summary = "File it on GitHub Issues",
                         onClick = { uriHandler.openUri("$PROJECT_URL/issues") },
                         trailing = { Chevron() }
                     )
                     Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     SettingItem(
                         icon = Icons.Filled.Refresh,
-                        title = "检查更新",
-                        summary = "当前 v${BuildConfig.VERSION_NAME}",
+                        title = "Check for updates",
+                        summary = "Current v${BuildConfig.VERSION_NAME}",
                         onClick = { checkForUpdatesManually() },
                         trailing = { Chevron() }
                     )
                     Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     SettingItem(
                         icon = Icons.Filled.Favorite,
-                        title = "支持开发者",
-                        summary = "微信 / 支付宝赞赏二维码",
+                        title = "Support the developer",
+                        summary = "WeChat / Alipay donation QR codes",
                         onClick = { showDonate = true },
                         trailing = { Chevron() }
                     )
                     Divider(startIndent = itemDividerIndent(), color = colors.divider)
                     SettingItem(
                         icon = Icons.Filled.Copyright,
-                        title = "开放源代码许可",
-                        summary = "查看本应用所使用的第三方开源库及其许可证信息",
+                        title = "Open-source licenses",
+                        summary = "Third-party open-source libraries used by this app and their licenses",
                         onClick = { aboutPage = AboutPage.LICENSES },
                         trailing = { Chevron() }
                     )
@@ -2090,14 +2090,14 @@ class MainActivity : ComponentActivity() {
                 bottom = inner.calculateBottomPadding() + 12.dp
             )
         ) {
-            item { SectionLabel("本项目与附加组件") }
+            item { SectionLabel("This project and bundled components") }
             items(localItems) { item ->
                 LicenseCard(item) { aboutLicense = item }
             }
             item {
                 SectionLabel(
-                    if (libraryItems.isEmpty()) "第三方依赖"
-                    else "第三方依赖（${libraryItems.size}）"
+                    if (libraryItems.isEmpty()) "Third-party dependencies"
+                    else "Third-party dependencies (${libraryItems.size})"
                 )
             }
             items(libraryItems) { item ->
@@ -2208,7 +2208,7 @@ class MainActivity : ComponentActivity() {
                     selinuxText = se
                 }
             } catch (t: Throwable) {
-                // binder 未就绪时静默
+                // stay silent until the binder is ready
             }
         }
     }
@@ -2335,7 +2335,7 @@ class MainActivity : ComponentActivity() {
                         addLog("Manager launch entry not found: $pkg")
                     }
                 } else {
-                    hotSwitchError = "切换失败：rc=$rc ${out.take(120)}"
+                    hotSwitchError = "Switch failed: rc=$rc ${out.take(120)}"
                     addLog("Hot switch -> ${kind.fullLabel} failed rc=$rc ${out.take(120)}")
                 }
             }
@@ -2395,10 +2395,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun mapSelinux(raw: String): String = when (raw) {
-        "Enforcing" -> "强制执行 (Enforcing)"
-        "Permissive" -> "宽容模式 (Permissive)"
-        "Disabled" -> "已禁用"
-        else -> "未知"
+        "Enforcing" -> "Enforcing"
+        "Permissive" -> "Permissive"
+        "Disabled" -> "Disabled"
+        else -> "Unknown"
     }
 
     private fun shizukuEnv(): Array<String> = arrayOf(
@@ -2430,7 +2430,7 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         android.widget.Toast.makeText(
                             applicationContext,
-                            "当前机型/内核不受支持：$kernelVersion",
+                            "This device/kernel is not supported: $kernelVersion",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     }
@@ -2466,7 +2466,7 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         android.widget.Toast.makeText(
                             applicationContext,
-                            "当前机型/内核不受支持：$kernelVersion",
+                            "This device/kernel is not supported: $kernelVersion",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     }
@@ -2559,10 +2559,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private enum class AppTab(val label: String, val icon: ImageVector) {
-        HOME("首页", Icons.Filled.Home),
-        LOGS("日志", Icons.Filled.Notes),
-        HISTORY("历史", Icons.Filled.History),
-        ABOUT("关于", Icons.Filled.Info)
+        HOME("Home", Icons.Filled.Home),
+        LOGS("Logs", Icons.Filled.Notes),
+        HISTORY("History", Icons.Filled.History),
+        ABOUT("About", Icons.Filled.Info)
     }
 
     private enum class ExploitKind(val fullLabel: String) {
@@ -2574,7 +2574,7 @@ class MainActivity : ComponentActivity() {
         CVE66118("CVE-2026-98260-6.6.118"),
         CVE66127("CVE-2026-98260-vivo-6.6.127"),
         CVE61157("CVE-2026-98260-Infinix-6.1.157"),
-        UNSUPPORTED("当前机型不支持")
+        UNSUPPORTED("This device is not supported")
     }
 
     private enum class ManagerKind(val fullLabel: String, val pkg: String, val manager: String) {
