@@ -14,13 +14,19 @@ firmware versions, and the 12/12 on-device baseline cross-check
 in the plant for future rows: an incomplete profile still refuses to
 run and prints `PORT_61157_PENDING` instead of touching the kernel.
 
-Engine compatibility is **not yet proven on 6.1** — see the caveat at the
-bottom. This port follows the same posix-cpu-timers engine as the 6.18 /
-6.12 / 6.6 chains; whether the race behaves identically on
-`6.1.157-android14` can only be answered by the on-device run. The
-2026-11-12 probe also confirmed `CONFIG_KASAN_HW_TAGS=y` and
-`CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y` on this build — engine-level risk
-factors for the spray stages, noted in the caveat.
+**Engine proven on 6.1 — first field run 2026-11-15 (Stellar mode).**
+The on-device run (Field run record below; CI APK from Actions run
+43673289231) landed the race on `6.1.157-android14`: the timer-free
+UAF window was hit in 32-35 ms per attempt with 31/32 slab ownership,
+the fake-cred write completed, and the SELinux zero-write round was
+in progress where the log paste cuts off. The constants are
+live-validated on device (`task_struct.cred +0x838` observed; the
+SELinux write resolved to the `...b820` enforcing page, image offset
+`0x225b820`). The former "not yet proven on 6.1" caveat is resolved —
+historical text kept at the bottom. The 2026-11-12 probe flags
+`CONFIG_KASAN_HW_TAGS=y` and `CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y`
+remain accurate as config facts; the field run shows the engine
+tolerates both.
 
 ## Target device
 
@@ -85,6 +91,7 @@ still useful for a future firmware).
 | release | `6.1.157-android14-11-ga8b0b542991e-ab15601211` | GL | final |
 | `OFF_TASK_CRED` | `0x838` (`task_struct.cred = 2104`) | GL | final |
 | `task_struct.real_cred` | `0x830` (2096) | GL | reference |
+| `task_struct.seccomp` (`OFF_TASK_SECCOMP`) | `0x900` (2304) | GL | reference (app-direct seccomp strip; see the app-direct verdict) |
 | `SELINUX_STATE_STATIC` | `0xffffffc08225b827` (= enforcing `0x225b820` + base + 7) | GL | final (script re-verifies) |
 | cred layout (`caps 0x30 ×5`, `security 0x80`, `user 0x88`, `user_ns 0x90`, `ucounts 0x98`, `group_info 0xa0`) | matches engine template | GL 6.x credential template | final |
 | `TIMER_SITE_LOW21` | `0x193300` — the true posix-timers site (bl `kmem_cache_alloc` at `do_timer_create+0xa4`, site `+0xa8`; bl `0x1932fc`). The ~~`0x19feb0`~~ filp-funnel low21 (`__alloc_file+0x2c`) stays retired (v4.1 correction) | S | final |
@@ -406,7 +413,13 @@ six synthetic console/kallsyms scenarios, 48 assertions).
    capture the full log — that is engine-level evidence, not a constants
    problem (see the caveat below).
 
-## Engine compatibility caveat (read before investing time)
+## Engine compatibility caveat (RESOLVED 2026-11-15 — kept for the record)
+
+**Resolution:** the 2026-11-15 field run (Stellar mode) landed the
+race on `6.1.157-android14` — `free_seen=1 burst hit=1` in 32-35 ms
+per attempt, the fake-cred write done, KASAN HW tags and
+init-on-alloc both present and both tolerated. The original caveat,
+written before that run:
 
 The CVE-2026-98260 engine has only been proven on 6.18/6.12/6.6 GKI
 kernels. The 6.1 posix-cpu-timers code is old enough to contain the same
@@ -417,6 +430,117 @@ CVE-2026-43499 route is the known-working path for X6873; if the 98260
 race turns out unreachable on 6.1.157, X6873 support would need engine
 work (or the GhostLock engine) rather than constants — that is out of
 this port's scope, which was a native Shark-engine profile port.
+
+## Field run record (2026-11-15, Stellar mode)
+
+First on-device run of the finished chain, launched from the CI APK
+(`hoshiyomiX/Shark-Releases` Actions run 43673289231, branch
+`x6873-support` @ `eae2c91`), Stellar backend, manager BakaSU
+(`com.resukisu.resukisu`, ksud `beta-1-gb4259fe5`, uapi 5, resolved
+from the manager APK — `SOURCE=manager-apk`).
+
+Environment facts from the run header:
+
+- `KERNEL=6.1.157-android14-11-ga8b0b542991e-ab15601211` — exact
+  profile match; `PROBE_KERNEL` / `PROFILE_61157` / `PROBE_TRACE=yes`
+  / `PROBE_OK` all on the first check.
+- `BOOT_REASON=kernel_panic` — the previous boot ended in a kernel
+  panic (an earlier exploit attempt). The race panic risk is real;
+  "clean boot, one attempt, retry after a reboot" (checklist above)
+  is the correct operating procedure.
+
+Stage `[1/4]` progress (log excerpt, 12:43:23-12:43:28 device time):
+
+- `[ids] page_alloc=263 page_free=261 pairs=1029` — the tracefs page
+  event stream decoded cleanly (the engine observation channel is
+  healthy in the shell domain).
+- `[base] made=512 best=0xffffff7fc0000000 count=482` — spray base
+  page established; KASLR slide derived at runtime
+  (`slide=0xefffffd561400000` in the engine frame).
+- `[cred] attempt=0 child=10905 ...` — cred located on the first
+  attempt (`child cred=0xffffff81ff734180`, target field `+8`).
+- Fake-cred write: `stage fake_cred ... attempt=1` → spray
+  (`slabs=67 pfns=66 recs=2048 kept=2048`) → trigger child
+  (`zombie code=2 status=9` — the deliberate failed-execve path) →
+  `free_seen=1 burst hit=1 after 35ms` → `reaped` → `write mode=fake`
+  done, with `slab_own=31/32` (31 of 32 objects in the victim slab
+  owned by the spray).
+- SELinux zero-write: `selinux_state=0xefffff95e365b827` read from
+  the fake-cred context, `stage selinux target=0xefffff95e365b820
+  mode=zero attempt=1` → second spray round → trigger →
+  `free_seen=1 burst hit=1 after 32ms` — the paste ends mid-stage
+  (before that round's `reaped`/`write` lines).
+
+Reading of the record:
+
+1. The engine race is **proven on 6.1.157** — the posix-timer page
+   was freed on cue, reclaimed by the spray, and the fake-cred write
+   completed. The engine-compatibility caveat is resolved.
+2. `KASAN_HW_TAGS` + `INIT_ON_ALLOC_DEFAULT_ON` did not prevent the
+   reclaim (31/32 ownership, hits in 32-35 ms) — the 2026-11-12 risk
+   flags stand as config facts, not as blockers.
+3. The `task→cred` write delta observed on device (`0x838`) and the
+   SELinux write target low bits (`...b820`, image offset `0x225b820`)
+   both match the port constants exactly — the profile row is
+   live-validated, not just statically derived.
+4. The expected continuation after the paste: the `panic_on_warn`
+   clear, the fake-cred sub-object fixups
+   (user/user_ns/ucounts/group_info), the child wake, then `[2/4]`
+   manager late-load → `[3/4]` su → `[4/4]` manager setup. Confirm
+   on-device: BakaSU opens and reports working, `su -c id` returns
+   `uid=0(root)`, and a re-run prints `ALREADY_LOADED`.
+
+## One-tap (app-direct) feasibility — verdict
+
+The recurring question for this port: can the chain run one-tap from
+the app's own sandbox (untrusted_app), ghostlock-app style, without
+Stellar / Shizuku / ADB? Answer for THIS engine: **no — not without
+engine rework.** It is an architecture property, not a constants
+problem:
+
+- The CVE-2026-98260 engine is tracefs-architected
+  (`exploit/src/plant_core.inc`): the race is observed through
+  `/sys/kernel/tracing/per_cpu/cpu*/trace_pipe_raw` kmem/page event
+  streams (the `[ids]` pair counting, the `free_seen`/burst watch
+  loop) with `tracing_on` control; the KASLR slide is derived from
+  the trace-observed timer call site (`observed_site -
+  STATIC_TIMER_SITE`); the post-race kernel READ primitive
+  (`rd_batch`) registers kprobes (`kprobe_events` + `instances/rd`, a
+  `capable` probe with absolute-address fetch args, fired via a
+  failing `finit_module` call); `/proc/slabinfo` feeds the `slab_usage`
+  stats.
+- untrusted_app has no tracefs: this port's own probe v1.2, run from
+  an app terminal (`u:r:untrusted_app_30:s0`, 2026-11-12), found
+  every S4 tracefs entry MISSING — not denied, invisible. Launching
+  this runner app-domain aborts cleanly at preflight with
+  `FAIL=probe REASON=trace channel unavailable` (`auto_preflight`) —
+  safe, but never one-tap.
+- The seccomp side is NOT the blocker: the trigger syscalls
+  (timer_create/timer_settime, fork, the failed execve,
+  memfd/socketpair) are inside the app seccomp allowlist, and the
+  root-child seccomp strip (`thread_info.flags` + `task_struct.seccomp`
+  zero writes, `OFF_TASK_SECCOMP=0x900` now documented in the
+  constants table) plus a LOCAL ProcessBuilder backend were
+  prototyped on the v2.4.1 base (`feat/app-direct`, 2026-11-15) —
+  that infra is necessary but not sufficient: the observation channel
+  has no app-domain substitute today.
+
+What one-tap on X6873 looks like instead:
+
+1. **Today, zero new code:** ghostlock-app (CVE-2026-43499) ships a
+   built-in profile for this exact kernel release (the same GL
+   measurements this port's cred/SELinux constants come from;
+   `recommend_shizuku = 0`; runtime-confirmed on device — the profile
+   records the SELinux write resolving and `getuid() -> 0` via the
+   `init_cred` install) and its root child runs the manager
+   `ksud late-load`. That is the full no-Shizuku one-tap chain on this
+   device — via the futex engine, whose observation channel is pure
+   syscalls (no tracefs).
+2. **Later, inside Shark:** integrate a syscall-only engine
+   (CVE-2026-43499 class; the ghostlock core is Apache-2.0) as an
+   app-domain engine behind the LOCAL backend + seccomp-strip infra.
+   That is engine work with its own porting checklist; the 98260
+   chain stays the Stellar/Shizuku path.
 
 ## References
 
