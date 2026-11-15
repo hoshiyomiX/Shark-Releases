@@ -549,6 +549,31 @@ What one-tap on X6873 looks like instead:
    That is engine work with its own porting checklist; the 98260
    chain stays the Stellar/Shizuku path.
 
+## App-direct SHIPPED (2026-11-15) — the 43499 channel is in the APK
+
+Option 2 above landed. The release APK now offers an "Execution mode"
+selector (and auto-selects it when no Stellar/Shizuku backend runs):
+
+- Engine: the Apache-2.0 ghostlock C++ core vendored at
+  `third_party/ghostlock-core/`, built by `exploit/build-ghostlock.sh`
+  into `jniLibs/arm64-v8a/libghostlock.so` (NDK API 35, C++23, PIE;
+  24/24 production units host-compile clean).
+- Profile: `app/src/main/assets/ghostlock_profiles/6.1.157-android14-11-ga8b0b542991e-ab15601211.glk1`
+  (GLK1 v2 wire, 1955 bytes, sha256
+  `414bb2e1eddc55593a8e7a42d5dd329a7752bcf3ceccf3739f7ed579970dc497`),
+  exported with the upstream profile-core exporter and decode-verified
+  against the vendored native reader: release exact, task.cred 0x838,
+  task.real_cred 0x830, task.seccomp 0x900, selinux_enforcing 0x225b820,
+  init_cred 0x2031aa8, route tcp_zerocopy, frontend RootChild,
+  backend Cve2026_43499 — ALL MATCH the constants table above.
+- App flow: `MainActivity.runGhostlockDirect()` (ProcessBuilder spawn,
+  `GHOSTLOCK_KSUD` pinned to the selected manager's libksud.so via
+  PackageManager, work dir `filesDir/ghostlock/run`, direct
+  `/proc/modules` + selinux read verification). Design doc:
+  `docs/app-direct.md`.
+- The 98260 Stellar/Shizuku path is untouched and remains the default
+  when a backend is running.
+
 ## References
 
 - GhostLock X6873 kernel profile (measured offsets used here):

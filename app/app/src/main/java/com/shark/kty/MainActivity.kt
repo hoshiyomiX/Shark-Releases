@@ -229,6 +229,13 @@ private val localLicenses = listOf(
         "MIT",
         "licenses/MIT.txt",
         "https://github.com/YuKongA/CVE-2026-98260"
+    ),
+    LocalLicense(
+        "GhostLock core (CVE-2026-43499)",
+        "App-direct engine vendored under third_party/ghostlock-core",
+        "Apache-2.0",
+        "licenses/Apache-2.0.txt",
+        "https://github.com/YuKongA/ghostlock-app"
     )
 )
 
@@ -265,6 +272,7 @@ class MainActivity : ComponentActivity() {
     private var hotManager by mutableStateOf(ManagerKind.KERNELSU)
     private var hotSwitchBusy by mutableStateOf(false)
     private var hotSwitchError by mutableStateOf<String?>(null)
+    private var execMode by mutableStateOf(ExecMode.REMOTE)
     private var tab by mutableStateOf(AppTab.HOME)
     private var showManual by mutableStateOf(false)
     private var showExtras by mutableStateOf(false)
@@ -438,6 +446,11 @@ class MainActivity : ComponentActivity() {
         vfsSupport = getSharedPreferences("pyb110", MODE_PRIVATE).getBoolean("vfs_support", false)
         val savedManager = getSharedPreferences("pyb110", MODE_PRIVATE).getString("manager", null)
         manager = runCatching { ManagerKind.valueOf(savedManager ?: "") }.getOrDefault(ManagerKind.KERNELSU)
+        execMode = if (getSharedPreferences("pyb110", MODE_PRIVATE).getString("exec_mode", null) == "APP_DIRECT") {
+            ExecMode.APP_DIRECT
+        } else {
+            ExecMode.REMOTE
+        }
         kernelVersion = runCatching { android.system.Os.uname().release }.getOrDefault("Unknown")
         exploit = PROFILE_BY_RELEASE[kernelVersion] ?: ExploitKind.UNSUPPORTED
         if (manager == ManagerKind.DYNAMIC && !supportsUniversal()) {
@@ -1236,7 +1249,7 @@ class MainActivity : ComponentActivity() {
     private fun StatusCard(granted: Boolean) {
         val dark = CouiTheme.isDark
         val colors = CouiPageDefaults.themeColors(dark)
-        val backendName = PrivService.pick()?.label ?: "Stellar"
+        val remote = PrivService.pick()
         val green = if (dark) Color(0xFF1A3825) else Color(0xFFDFFAE4)
         val greenTint = Color(0xFF36D167)
         Group(colors = colors.copy(card = if (granted) green else colors.card)) {
@@ -1248,16 +1261,27 @@ class MainActivity : ComponentActivity() {
                     contentAlignment = Alignment.TopStart
                 ) {
                     Column {
+                        val title = when {
+                            remote != null && granted -> "${remote.label} authorized"
+                            remote != null -> "${remote.label} not authorized"
+                            appDirectAvailable() -> "App-direct ready"
+                            else -> "Stellar not authorized"
+                        }
+                        val subtitle = when {
+                            remote != null && granted -> "Connected to ${remote.label} — ready to jailbreak"
+                            remote != null -> "Not connected to ${remote.label} — grant permission first"
+                            appDirectAvailable() -> "No ADB / Stellar / Shizuku needed — the engine runs in-app"
+                            else -> "Not connected — grant permission first"
+                        }
                         Text(
-                            text = if (granted) "$backendName authorized" else "$backendName not authorized",
+                            text = title,
                             kind = CouiTextKind.PageTitle,
                             color = colors.title,
                             textAlign = TextAlign.Start
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = if (granted) "Connected to $backendName — ready to jailbreak"
-                            else "Not connected to $backendName — grant permission first",
+                            text = subtitle,
                             kind = CouiTextKind.Body,
                             color = colors.title,
                             textAlign = TextAlign.Start
@@ -1284,6 +1308,7 @@ class MainActivity : ComponentActivity() {
         val colors = CouiPageDefaults.themeColors()
         val label = when {
             busy -> "Running…"
+            appDirectSelected() -> if (ksuActive) "Verify / jailbreak again" else "One-tap jailbreak (no PC)"
             !binderReady -> "Stellar not running (tap to open)"
             !authorized -> "Authorize Shizuku"
             ksuActive -> "Verify / jailbreak again"
@@ -1294,6 +1319,7 @@ class MainActivity : ComponentActivity() {
                 onClick = {
                     if (!busy) {
                         when {
+                            appDirectSelected() -> runFlow()
                             !binderReady -> {
                                 addLog("Start Stellar or Shizuku first")
                                 PrivService.openManager(applicationContext)
@@ -1319,6 +1345,16 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun HomeEntriesCard() {
         Group {
+            if (appDirectAvailable()) {
+                DropdownItem(
+                    icon = Icons.Filled.Smartphone,
+                    title = "Execution mode",
+                    values = ExecMode.entries,
+                    selected = if (appDirectSelected()) ExecMode.APP_DIRECT else execMode,
+                    label = { it.fullLabel }
+                ) { selectExecMode(it) }
+                Divider(startIndent = itemDividerIndent())
+            }
             DropdownItem(
                 icon = Icons.Filled.Tag,
                 title = "ROOT manager",
@@ -2199,10 +2235,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshKsuAsync() {
-        if (PrivService.pick() == null) return
+        if (PrivService.pick() == null && !appDirectAvailable()) return
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val (active, se) = readDeviceState()
+                val (active, se) = readDeviceState(PrivService.pick() == null)
                 withContext(Dispatchers.Main) {
                     ksuActive = active
                     selinuxText = se
@@ -2213,7 +2249,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun readDeviceState(): Pair<Boolean, String> {
+    private fun readDeviceState(local: Boolean = false): Pair<Boolean, String> {
+        if (local) {
+            /* App-domain direct reads: the shell one-liner pipeline needs a
+             * privileged backend, but untrusted_app can read both files. */
+            val active = runCatching {
+                File("/proc/modules").readLines()
+                    .any { it.startsWith("kernelsu ") && it.contains(" Live ") }
+            }.getOrDefault(false)
+            val se = runCatching {
+                when (File("/sys/fs/selinux/enforce").readText().trim()) {
+                    "1" -> "Enforcing"
+                    "0" -> "Permissive"
+                    else -> ""
+                }
+            }.getOrDefault("")
+            return active to mapSelinux(se)
+        }
         val p = PrivService.newProcess(
             arrayOf("sh", "-c", "if grep -q '^kernelsu .* Live ' /proc/modules; then echo YES; elif timeout 3 su -c id 2>/dev/null | grep -q uid=0; then echo YES; else echo NO; fi; getenforce"),
             shizukuEnv(), "/"
@@ -2421,7 +2473,11 @@ class MainActivity : ComponentActivity() {
         busy = true
         val softReboot = softRebootAfter
         val startedAt = System.currentTimeMillis()
-        HistoryStore.start(applicationContext, manager.fullLabel, exploit.fullLabel, kernelVersion, deviceModel)
+        HistoryStore.start(
+            applicationContext, manager.fullLabel,
+            if (appDirectSelected()) "CVE-2026-43499-app-direct" else exploit.fullLabel,
+            kernelVersion, deviceModel
+        )
         lifecycleScope.launch(Dispatchers.IO) {
             var success = false
             var exit = -1
@@ -2434,6 +2490,16 @@ class MainActivity : ComponentActivity() {
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     }
+                    return@launch
+                }
+                if (appDirectSelected()) {
+                    if (!appDirectAvailable()) {
+                        addLog("App-direct unavailable on this kernel: $kernelVersion")
+                        return@launch
+                    }
+                    val (directExit, directOk) = runGhostlockDirect(softReboot)
+                    exit = directExit
+                    success = directOk
                     return@launch
                 }
                 if (PrivService.pick() == null) {
@@ -2565,6 +2631,15 @@ class MainActivity : ComponentActivity() {
         ABOUT("About", Icons.Filled.Info)
     }
 
+    /* Jailbreak execution channel. REMOTE keeps the proven Stellar/Shizuku
+     * shell pipeline for the 98260 runners; APP_DIRECT runs the vendored
+     * CVE-2026-43499 ghostlock engine inside the app sandbox - no ADB,
+     * no Stellar, no Shizuku. */
+    private enum class ExecMode(val fullLabel: String) {
+        REMOTE("Stellar / Shizuku (98260)"),
+        APP_DIRECT("App-direct, no PC (43499)")
+    }
+
     private enum class ExploitKind(val fullLabel: String) {
         CVE61821("CVE-2026-98260-6.18"),
         CVE61269("CVE-2026-98260-6.12.69"),
@@ -2597,6 +2672,129 @@ class MainActivity : ComponentActivity() {
                 (kernelVersion.contains("gdd6fd5c98918") ||
                     kernelVersion.contains("g690108013dcc")))
 
+    /* ===== App-direct (CVE-2026-43499, no ADB / Stellar / Shizuku) ===== */
+
+    /** Kernels carrying a bundled GLK1 profile can run the app-direct 43499
+     * engine inside the app sandbox (ghostlock-app model). The 98260 runners
+     * cannot: their observation channel needs the shell tracefs access. */
+    private fun appDirectProfile(): String? = GHOSTLOCK_PROFILES[kernelVersion]
+
+    private fun appDirectEngineInstalled(): Boolean =
+        File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE).isFile
+
+    private fun appDirectAvailable(): Boolean =
+        exploit != ExploitKind.UNSUPPORTED && appDirectProfile() != null && appDirectEngineInstalled()
+
+    /** Effective mode: the persisted choice, or app-direct forced when no
+     * Stellar/Shizuku backend is running (REMOTE cannot execute then). */
+    private fun appDirectSelected(): Boolean =
+        appDirectAvailable() && (execMode == ExecMode.APP_DIRECT || PrivService.pick() == null)
+
+    private fun selectExecMode(mode: ExecMode) {
+        execMode = mode
+        getSharedPreferences("pyb110", MODE_PRIVATE).edit().putString("exec_mode", mode.name).apply()
+        addLog("Execution mode: ${mode.fullLabel}")
+    }
+
+    /** App-direct jailbreak: spawn the vendored ghostlock engine
+     * (libghostlock.so) with a plain ProcessBuilder inside the app sandbox,
+     * feed it the bundled GLK1 profile, and let its root child run the
+     * manager ksud late-load. No privileged backend involved. */
+    private fun runGhostlockDirect(softReboot: Boolean): Pair<Int, Boolean> {
+        val profileAsset = appDirectProfile()
+        if (profileAsset == null || !appDirectEngineInstalled()) {
+            addLog("App-direct engine or profile missing for $kernelVersion")
+            return -1 to false
+        }
+        val initialManager = if (manager == ManagerKind.DYNAMIC) ManagerKind.KERNELSU else manager
+        /* Manager preflight + ksud resolution from the app domain: the shell
+         * `pm path` one-liner is a backend-only tool; PackageManager does the
+         * same job without one. */
+        val ksud = runCatching {
+            val info = packageManager.getApplicationInfo(initialManager.pkg, 0)
+            val k = File(info.nativeLibraryDir, "libksud.so")
+            if (k.canExecute()) k.absolutePath else null
+        }.getOrNull()
+        if (ksud == null) {
+            addLog("Manager not installed (or has no libksud.so): ${initialManager.pkg}. Install the manager APK first.")
+            return -1 to false
+        }
+        val homeDir = File(filesDir, "ghostlock")
+        if (!homeDir.isDirectory) homeDir.mkdirs()
+        val runDir = File(homeDir, "run")
+        if (!runDir.isDirectory) runDir.mkdirs()
+        val profile = File(homeDir, profileAsset)
+        runCatching {
+            if (!profile.isFile || profile.length() == 0L) {
+                assets.open("ghostlock_profiles/$profileAsset").use { input ->
+                    profile.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }.onFailure {
+            addLog("Failed to stage the kernel profile: $it")
+            return -1 to false
+        }
+        addLog("Starting CVE-2026-43499 (app-direct - no ADB / Stellar / Shizuku)")
+        addLog("Manager ${initialManager.fullLabel}; ksud=$ksud")
+        val cmd = arrayOf(
+            File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE).absolutePath,
+            "--load-prebuilt-profile", profile.absolutePath
+        )
+        val env = arrayOf(
+            "PATH=/system/bin:/system/xbin:/data/adb/ksu/bin",
+            "HOME=${runDir.absolutePath}",
+            "GHOSTLOCK_HOME=${runDir.absolutePath}",
+            "TMPDIR=${runDir.absolutePath}",
+            "GHOSTLOCK_KSU_LOG=${File(runDir, "ksu.log").absolutePath}",
+            "GHOSTLOCK_KSUD=$ksud"
+        )
+        val p = PrivService.newProcessFor(PrivBackend.LOCAL, cmd, env, runDir.absolutePath)
+        val out = p.getInputStream()
+        val err = p.getErrorStream()
+        val t1 = Thread {
+            try {
+                out.bufferedReader().forEachLine { addLog(it) }
+            } catch (t: Throwable) {
+                // stream closed by waitFor() cleanup
+            }
+        }.apply { isDaemon = true; start() }
+        val t2 = Thread {
+            try {
+                err.bufferedReader().forEachLine { addLog(it) }
+            } catch (t: Throwable) {
+                // stream closed by waitFor() cleanup
+            }
+        }.apply { isDaemon = true; start() }
+        val rc = p.waitFor()
+        runCatching { out.close() }
+        runCatching { err.close() }
+        t1.join(2000)
+        t2.join(2000)
+        addLog("exploit exit=$rc")
+        val (active, se) = readDeviceState(true)
+        withContext(Dispatchers.Main) {
+            ksuActive = active
+            selinuxText = se
+        }
+        addLog(if (active) "KernelSU module loaded" else "KernelSU module not loaded")
+        if (rc == 0 && active) {
+            if (softReboot) {
+                addLog("Jailbreak complete; restarting zygote")
+                val rebootRc = runCatching {
+                    PrivService.newProcessFor(
+                        PrivBackend.LOCAL,
+                        arrayOf("su", "-c", "setprop ctl.restart zygote"),
+                        arrayOf("PATH=/system/bin:/system/xbin:/data/adb/ksu/bin", "HOME=/"), "/"
+                    ).waitFor()
+                }.getOrDefault(-1)
+                if (rebootRc != 0) addLog("Soft reboot failed rc=$rebootRc (use the manager's soft reboot)")
+            } else {
+                withContext(Dispatchers.Main) { launchManager() }
+            }
+        }
+        return rc to (rc == 0 && active)
+    }
+
     private fun supportsUniversal(): Boolean =
         exploit == ExploitKind.CVE61821 ||
             exploit == ExploitKind.CVE61269 ||
@@ -2619,6 +2817,16 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val REQ_SHIZUKU = 1001
+        private const val GHOSTLOCK_ENGINE = "libghostlock.so"
+
+        /* Kernels with a bundled GLK1 binary profile for the app-direct
+         * CVE-2026-43499 engine (exported from the GhostLock profile set -
+         * same GL device measurements as the 98260 port constants). */
+        private val GHOSTLOCK_PROFILES: Map<String, String> = mapOf(
+            "6.1.157-android14-11-ga8b0b542991e-ab15601211" to
+                "6.1.157-android14-11-ga8b0b542991e-ab15601211.glk1"
+        )
+
         private val PROFILE_BY_RELEASE: Map<String, ExploitKind> = mapOf(
             "6.18.21-android17-5-gf957accaf563-ab15926176-4k" to ExploitKind.CVE61821,
             "6.18.21-android17-5-g7fcbffcad3e1-ab16353812-4k" to ExploitKind.CVE61821,

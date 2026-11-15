@@ -92,4 +92,17 @@ profile-switch module described in entry 9.
           KSU-Universal project README. The manager APKs' own ksud binaries
           remain external (see "Supported managers" above).
 
+10. GhostLock core (CVE-2026-43499 futex PI engine)
+    Source: https://github.com/YuKongA/ghostlock-app (local tree @ 5f6d604)
+    License: Apache-2.0 (full text:
+             third_party/cve-2026-43499-LICENSES/YuKongA-Apache-2.0.txt)
+    Used: the app-direct (no ADB / Stellar / Shizuku) jailbreak channel.
+          The C++ exploit core is vendored under third_party/ghostlock-core/
+          (tests excluded), built by exploit/build-ghostlock.sh and shipped as
+          lib/arm64-v8a/libghostlock.so. Device offsets come from the bundled
+          GLK1 binary profile under assets/ghostlock_profiles/ (exported with
+          the upstream profile-core exporter; same GhostLock device
+          measurements as the X6873 port constants). The engine's root child
+          performs the manager ksud late-load; no ksud is bundled for it.
+
 The application icon is drawn by this project.
