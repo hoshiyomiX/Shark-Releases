@@ -552,3 +552,57 @@ What one-tap on X6873 looks like instead:
 - Device facts: deviceinfohw.ru/devices/item.php?item=126821 (X6873, MT6897)
 - Firmware (boot.img source for a host-side derivation alternative):
   hovatek.com/forum/thread-49710.html (X6873 stock ROM collection)
+
+## Field-fix record: 2026-11-15 decoy-node write encoding
+
+Two consecutive field runs (12:43 and 14:23, CI build eae2c91) landed the
+race cleanly (`free_seen=1 burst hit=1` both times) but died at the write
+phase: the 12:43 boot ended in `kernel_panic` (seen as the 14:23 run's
+`BOOT_REASON=kernel_panic`), and the 14:23 run died inside the first
+plant's reap, before the `[+] reaped` line could print.
+
+Root cause, verified against the actual kernel bytecode (boot.img Image
+disassembly, anchored on the on-device kallsyms; every profile constant
+re-checked and confirmed exact — `selinux_state`, `panic_on_warn`,
+`root_user`, `init_user_ns`, `init_ucounts`, `init_groups`, node offset
+`k_itimer+0x78` from `posix_cpu_timer_set`'s `add x1, x23, #0x78`):
+
+- `cleanup_timers()` (called from `release_task+0xe8`, i.e. the reap that
+  the engine waits for after the spray) loops `timerqueue_del()` over the
+  dead task's cpu-timer queue and zeroes `node+0x20` after each erase.
+- This ROM's `timerqueue_del()` compiles the `RB_EMPTY_NODE` check into a
+  `brk #0x800` WARN-with-resume. The old fake-cred encoding laid the cred
+  *on* the stale node with `parent_color = node`, which is exactly the
+  `RB_EMPTY_NODE` state: every fake write tripped the WARN (fatal when
+  `panic_on_warn=1`) and the `node+0x20` zeroing clobbered the overlaid
+  cred's `ucounts` (NULL) for the runs that survived the WARN.
+
+The fix (`exploit/src/plant_core.inc`, shared by every engine):
+
+- **Decoy node**: the stale node at `V+0x78` stays a pure rb node
+  (`parent_color = A`, `rb_left = target`, `rb_right = 0`) and points at
+  a separate fake cred elsewhere in the reclaimed page. `RB_EMPTY_NODE`
+  is never true, so the WARN cannot fire; `rb_erase`'s left-only branch
+  writes `A` into `task->cred`; the erase's `change_child` dirt lands on
+  `cred->suid/sgid` only; the cleanup's `node+0x20` zeroing hits the
+  decoy, so `cred->ucounts` survives intact.
+- **Single-erase exit**: `cred->usage = 0` and `cred->uid/gid = N` make
+  `rb_next(N)` walk `N -> A -> (usage 0) -> NULL`, so the cleanup loop
+  terminates after the one erase and never touches the cred slot.
+  `usage=0` also means `put_cred()` can never free the fake cred.
+- **Transient dirt**: `uid/gid` keeps the node address and `suid/sgid`
+  keeps the write target until the woken child runs `setuid(0)` (full
+  caps) — no kernel-side deref of either happens in that window, so the
+  old `fake_uid` repair stage is removed (one plant cycle fewer).
+- **panic_on_warn pre-stage**: the runner executes as the shell
+  (Stellar/Shizuku uid 2000) where `/proc/sys/kernel/panic_on_warn` is
+  readable pre-exploit; when it reads 1 a zero-mode write clears it
+  before the chain (zero-mode erases never warn, so the pre-stage is
+  itself safe). The decoy makes the fake write WARN-free regardless.
+
+The write mechanics were re-validated end to end against the transcribed
+`timerqueue_del`/`rb_erase`/`rb_next` bytecode with a deterministic
+simulation (1 erase, 0 WARNs, no writes outside the reclaimed page /
+`task->cred` / the dead task's queue head; `euid=0`, `ucounts` and
+`security` intact). All eight engines pass `gcc -fsyntax-only` and the
+k61157 full compile.
