@@ -19,10 +19,15 @@ The on-device run (Field run record below; CI APK from Actions run
 43673289231) landed the race on `6.1.157-android14`: the timer-free
 UAF window was hit in 32-35 ms per attempt with 31/32 slab ownership,
 the fake-cred write completed, and the SELinux zero-write round was
-in progress where the log paste cuts off. The constants are
-live-validated on device (`task_struct.cred +0x838` observed; the
-SELinux write resolved to the `...b820` enforcing page, image offset
-`0x225b820`). The former "not yet proven on 6.1" caveat is resolved —
+in progress where the log paste cuts off. The task→cred write delta
+(`0x838`) matched the port constants exactly. **Correction
+(2026-11-15 15:31):** the earlier reading that "the SELinux write
+resolved to the `...b820` enforcing page" only checked the low bits —
+the full address was non-canonical because the KASLR slide was
+derived from a one-digit-short `timer_site` constant (see the
+slide-derivation field-fix record); the low-bit match was a property
+of the low21-preserving garbage, not evidence the target was right.
+The former "not yet proven on 6.1" caveat is resolved —
 historical text kept at the bottom. The 2026-11-12 probe flags
 `CONFIG_KASAN_HW_TAGS=y` and `CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y`
 remain accurate as config facts; the field run shows the engine
@@ -96,13 +101,15 @@ still useful for a future firmware).
 | cred layout (`caps 0x30 ×5`, `security 0x80`, `user 0x88`, `user_ns 0x90`, `ucounts 0x98`, `group_info 0xa0`) | matches engine template | GL 6.x credential template | final |
 | `TIMER_SITE_LOW21` | `0x193300` — the true posix-timers site (bl `kmem_cache_alloc` at `do_timer_create+0xa4`, site `+0xa8`; bl `0x1932fc`). The ~~`0x19feb0`~~ filp-funnel low21 (`__alloc_file+0x2c`) stays retired (v4.1 correction) | S | final |
 | `COPY_PROCESS_LOW21` | `0xac148` (29/29 fork-churn allocs, fork.c cluster; re-confirmed 2026-11-14 by kallsyms enclosing `dup_task_struct+0x54` ×2 boots; static parse agrees) | P/S | final |
-| `STATIC_TIMER_SITE` | `0xffffffc08193300` (= base `0xffffffc080000000` + linked `0x193300`, inside `do_timer_create` `[0x193258, 0x193858)` — exactly the sibling `+0x94..0xb8` band; bl `0x1932fc` → `kmem_cache_alloc`) | S | final |
+| `STATIC_TIMER_SITE` | `0xffffffc080193300` (= base `0xffffffc080000000` + linked `0x193300`, inside `do_timer_create` `[0x193258, 0x193858)` — exactly the sibling `+0x94..0xb8` band; bl `0x1932fc` → `kmem_cache_alloc`). **2026-11-15 15:31 fix:** shipped one hex digit short (`0xffffffc08193300`, 15 digits) since `b223d40` — every runtime slide derived from it was garbage; see the slide-derivation field-fix record | S | final (typo fixed) |
 | `PANIC_ON_WARN_STATIC` | `0xffffffc08200ae0c` (linked `0x200ae0c`) | S | final |
 | `ROOT_USER_STATIC` | `0xffffffc082030780` (linked `0x2030780`) | S | final |
 | `INIT_USER_NS_STATIC` | `0xffffffc0820304f0` (linked `0x20304f0`) | S | final |
 | `INIT_UCOUNTS_STATIC` | `0xffffffc082032008` (linked `0x2032008`) | S | final |
 | `INIT_GROUPS_STATIC` | `0xffffffc082031aa0` (linked `0x2031aa0`) | S | final |
 | `TIMER_REQ` / `TIMER_ALLOC` | `0x108` / `0x140` (139 events) | P | final |
+| `STATIC_CRED_SITE` / `CRED_SITE_LOW21` | `0xffffffc0800e50d4` / `0xe50d4` — the cred_jar alloc call site (prepare_creds), linked `0xe50d4`, observed as the site mode in the 2026-11-15 field runs; cross-check anchor for the runtime slide vote | S + field | final |
+| `STATIC_TASK_SITE` | `0xffffffc0800ac148` — the dup_task_struct alloc call site (linked `0xac148` = `COPY_PROCESS_LOW21`, static parse); second cross-check anchor for the slide vote | S | final |
 | `CRED_REQ` / `CRED_ALLOC` | `0xb0` / `0xc0` (65 events) | P | final |
 | `TASK_ALLOC_BYTES` / `TASK_ALLOC_PADDED` | `0x12c0` / `0x12c0` (29 events) | P | final |
 | KASLR slide anchors (`init_task 0x201f640`, `init_cred 0x2031aa8`, `root_task_group 0x2209980`) | used by the derive script to pin the slide | GL | reference |
@@ -606,3 +613,81 @@ simulation (1 erase, 0 WARNs, no writes outside the reclaimed page /
 `task->cred` / the dead task's queue head; `euid=0`, `ucounts` and
 `security` intact). All eight engines pass `gcc -fsyntax-only` and the
 k61157 full compile.
+
+## Field-fix record: 2026-11-15 15:31 KASLR slide derivation (one-digit-short timer_site)
+
+The third field run (15:31, CI build `69f0c62`) got further than both
+12:43/14:23 runs: the fake-cred plant completed end to end
+(`free_seen=1 burst hit=1 after 89ms` → `reaped` →
+`write mode=fake target=…dac078`), the fake cred was installed, and the
+run died at the START of the SELinux zero-write round — the log cuts at
+`[dbg] plant1 spray round=1 at free (no churn)` and the next boot shows
+`BOOT_REASON=kernel_panic` (the `free_seen`/`burst hit` lines print only
+after the round completes, so their absence means the kernel died inside
+the window).
+
+Root cause — a one-digit-short profile constant, not the trace channel:
+
+- `K61157_plant.c` shipped `timer_site = 0xffffffc08193300` (15 hex
+  digits) since `b223d40`. The base convention is
+  `0xffffffc080000000 + 0x193300 = 0xffffffc080193300` (16 digits) — the
+  README's own constant-table formula never matched the pasted value.
+- The engine derives the runtime slide as
+  `observed_site - STATIC_TIMER_SITE`. The observed sites were CORRECT
+  text addresses all along (reconstructed from both boots' logs:
+  `0xffffffd169593300` / `0xffffffd9b6593300`, true slides
+  `0x1161400000` / `0x19ae400000` — tens of GiB, consistent with the
+  VA48 vmalloc KASLR span). Subtracting the 15-digit constant turned
+  every slide negative-huge (`0xefffffd561400000`, `0xefffffddae400000`).
+- The garbage slide poisoned everything downstream at once: the
+  SELinux/panic_on_warn zero-write targets (`SELINUX_STATE_STATIC +
+  slide - 7 = 0xefffff9e3065b820`, non-canonical → the round-2 erase
+  faulted → panic) and the fake cred's `user`/`user_ns`/`ucounts`/
+  `group_info` pointers (`STATIC + slide`, garbage → any
+  `prepare_creds()`/`set_user()` on the fake cred would fault too).
+- The low21 checks could not catch it: both sites share low21
+  `0x193300`, so the garbage slides were still "2 MiB aligned", and the
+  `...b820` low bits of the SELinux target still matched the enforcing
+  offset — which is why the 12:43 record misread the target as
+  "resolved to the enforcing page".
+
+Fix (`exploit/src/K61157_plant.c` + shared `exploit/src/plant_core.inc`,
+host unit test `ports/x6873/tools/test_derive_slide.c` driver):
+
+1. **`timer_site` corrected to `0xffffffc080193300`** (the missing digit
+   restored). With the 15:31 field site this yields the convention-frame
+   slide `0x1936400000` and a canonical SELinux target
+   `0xffffffd9b865b820`.
+2. **Slide derivation hardened (all engines):** `scan_timer_allocs` now
+   histograms every passing `call_site` and reports the MODE (the exec
+   thread emits ~2048 records from the single `do_timer_create` site;
+   a stray low21 colliding record can no longer be first-match
+   promoted). `derive_slide()` validates every candidate (2 MiB
+   alignment, positive, < 16 TiB vmalloc-span bound, canonical
+   `SELINUX_STATE_STATIC + slide`) and votes three independent anchors:
+   the timer site mode plus the NEW leak-phase anchors
+   `STATIC_CRED_SITE` (`0xffffffc0800e50d4`, prepare_creds site) and
+   `STATIC_TASK_SITE` (`0xffffffc0800ac148`, dup_task_struct site).
+   A single bad constant now loses the vote or fails the run closed
+   (`FAIL=… slide …`, no write) instead of firing — the unit test
+   proves the old typo alone would have been outvoted 2:1.
+3. **Fail-closed write gates:** every slide-derived `stage_write` target
+   is checked (`require_kptr_target`) before planting; a non-canonical
+   target aborts with a clear tag instead of panicking the device.
+4. **Child uid normalization (second latent bug):** the decoy encoding
+   leaves `uid/gid/suid/sgid` = the node address, but `wait_child_main`
+   still exited when `uid != 0` — after the slide fix the woken child
+   would have died at that check and never run the late-load. The fake
+   path now runs `setresgid(0)` + `setuid(0)` first (normalizing the
+   transient ids exactly as the decoy design intends) and only refuses
+   if `setuid(0)` itself fails.
+
+Diagnostics added for the next field run: `[dbg] plant1 timer site
+hist:` (the full call-site histogram), `[slide] anchor … ok=…` lines,
+`[+] slide=… votes=…`, and `cred_site=…(n=…) task_site=…(n=…)` on the
+`[cred]` line. Expected continuation on device: round 1 as today, then
+`[slide] anchor timer … ok=1` → `selinux` stage with a canonical
+`0xffffff…b820` target → `panic_on_warn` (if 1) → child wake with
+`setresgid(0)=0` / `setuid(0)=0` → `[2/4]` late-load. All seven
+plant_core engines pass `gcc -fsyntax-only`; the k61157 host build plus
+`ports/x6873/tools/test_derive_slide.c` (19 assertions, field vectors; build: `gcc -D_GNU_SOURCE -pthread -I exploit/src -o /tmp/t ports/x6873/tools/test_derive_slide.c `scripts/test_derive_slide.c` (19 assertions, field vectors)`scripts/test_derive_slide.c` (19 assertions, field vectors) /tmp/t`) all pass.
