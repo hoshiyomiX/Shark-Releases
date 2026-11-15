@@ -35,7 +35,17 @@ jobs:
           ./exploit/build-all.sh
           ls -l app/app/src/main/jniLibs/arm64-v8a/
 
-      - name: Build the APK (unsigned without keystore.properties)
+      - name: Create the dev keystore (signed, installable APK)
+        run: |
+          mkdir -p app/keystore
+          keytool -genkeypair -keystore app/keystore/shark-dev.jks \
+            -alias sharkdev -keyalg RSA -keysize 4096 -validity 10000 \
+            -storepass sharkdev123 -keypass sharkdev123 \
+            -dname "CN=Shark Dev, OU=Port, O=Shark-Releases, C=ID"
+          printf 'storeFile=keystore/shark-dev.jks\nstorePassword=sharkdev123\nkeyAlias=sharkdev\nkeyPassword=sharkdev123\n' \
+            > app/keystore.properties
+
+      - name: Build the signed APK
         run: |
           cd app
           ./gradlew :app:assembleRelease --no-daemon
@@ -43,7 +53,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: shark-apk-unsigned
+          name: shark-apk
           path: app/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
