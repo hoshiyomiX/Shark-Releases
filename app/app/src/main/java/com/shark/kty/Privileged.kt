@@ -15,11 +15,11 @@ enum class PrivBackend(val label: String) {
     STELLAR("Stellar"),
     SHIZUKU("Shizuku"),
     /**
-     * App-direct execution (ghostlock-app model): the CVE-2026-43499 engine
-     * is spawned with a plain ProcessBuilder inside the app sandbox
-     * (untrusted_app domain) - no Stellar / Shizuku / ADB involved. Only the
-     * kernels with a bundled GLK1 profile (and the libghostlock.so engine)
-     * support it; see MainActivity.appDirectAvailable().
+     * App-direct execution: the SHARK runner (CVE-2026-98260) is spawned
+     * with a plain ProcessBuilder inside the app sandbox (untrusted_app
+     * domain, perf self-sampling + fixed linear frame, no tracefs) - no
+     * Stellar / Shizuku / ADB involved. Only the runners carrying the
+     * app-domain engine support it; see MainActivity.appDirectRunner().
      */
     LOCAL("App-direct")
 }
@@ -46,7 +46,7 @@ object PrivService {
     /** Same as pick() but falls back to the local app-direct backend when the
      * caller has verified this kernel supports it. Order stays
      * Stellar > Shizuku > LOCAL: the shell backends run every runner, LOCAL
-     * only runs the app-domain 43499 engine. */
+     * runs the app-domain shark engine. */
     fun pickOrLocal(appDirectSupported: Boolean): PrivBackend? =
         pick() ?: if (appDirectSupported) PrivBackend.LOCAL else null
 
@@ -94,8 +94,7 @@ object PrivService {
         }
 
     /** Plain ProcessBuilder spawn inside the app sandbox. The engine binary
-     * lives in nativeLibraryDir (the only app-owned exec path), exactly the
-     * ghostlock-app execution model. */
+     * lives in nativeLibraryDir (the only app-owned exec path). */
     private fun newLocalProcess(cmd: Array<String>, env: Array<String>?, dir: String?): PrivProcess {
         val pb = ProcessBuilder(*cmd).redirectErrorStream(false)
         dir?.let { pb.directory(File(it)) }

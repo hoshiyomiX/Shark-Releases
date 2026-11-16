@@ -35,11 +35,6 @@ jobs:
           ./exploit/build-all.sh
           ls -l app/app/src/main/jniLibs/arm64-v8a/
 
-      - name: Build the ghostlock (CVE-2026-43499) app-direct engine into jniLibs
-        run: |
-          ./exploit/build-ghostlock.sh
-          ls -l app/app/src/main/jniLibs/arm64-v8a/libghostlock.so
-
       - name: Create the dev keystore (signed, installable APK)
         run: |
           mkdir -p app/keystore

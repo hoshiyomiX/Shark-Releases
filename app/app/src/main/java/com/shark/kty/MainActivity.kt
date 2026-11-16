@@ -234,7 +234,7 @@ private val localLicenses = listOf(
     ),
     LocalLicense(
         "GhostLock core (CVE-2026-43499)",
-        "App-direct engine vendored under third_party/ghostlock-core",
+        "Reference engine; the perf self-sampling and root-script models in the app-domain shark port derive from it (vendored under third_party/ghostlock-core)",
         "Apache-2.0",
         "licenses/Apache-2.0.txt",
         "https://github.com/YuKongA/ghostlock-app"
@@ -2286,15 +2286,15 @@ class MainActivity : ComponentActivity() {
         return active to se
     }
 
-    /* Tri-state verdict over the per-run ghostlock root-script log:
+    /* Tri-state verdict over the per-run shark root-script log:
      * 1 = module loaded, 0 = script-reported failure, -1 = no verdict yet.
      * The root script truncates and rewrites the file on every run and
      * chmods it 644, so the app can read back the same evidence the
-     * engine's handoff probe used. A late-loaded LKM does not survive a
+     * runner's module watch uses. A late-loaded LKM does not survive a
      * reboot, so markers only count when the log was written during the
      * current boot. */
-    private fun ghostlockRunLogVerdict(): Int {
-        val log = File(filesDir, "ghostlock/run/ksu.log")
+    private fun sharkRunLogVerdict(): Int {
+        val log = File(filesDir, "shark/run/ksu.log")
         if (!log.isFile) return -1
         val bootWallClockMs = System.currentTimeMillis() - SystemClock.elapsedRealtime()
         val fromCurrentBoot = runCatching {
@@ -2310,7 +2310,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun ghostlockRunLogLoaded(): Boolean = ghostlockRunLogVerdict() == 1
+    private fun ghostlockRunLogLoaded(): Boolean = sharkRunLogVerdict() == 1
 
     private fun updateAntiRootGuard(value: Boolean) {
         antiRootGuard = value
@@ -2509,7 +2509,7 @@ class MainActivity : ComponentActivity() {
         val startedAt = System.currentTimeMillis()
         HistoryStore.start(
             applicationContext, manager.fullLabel,
-            if (appDirectSelected()) "CVE-2026-43499-app-direct" else exploit.fullLabel,
+            if (appDirectSelected()) "CVE-2026-98260-app-direct" else exploit.fullLabel,
             kernelVersion, deviceModel
         )
         lifecycleScope.launch(Dispatchers.IO) {
@@ -2531,7 +2531,7 @@ class MainActivity : ComponentActivity() {
                         addLog("App-direct unavailable on this kernel: $kernelVersion")
                         return@launch
                     }
-                    val (directExit, directOk) = runGhostlockDirect(softReboot)
+                    val (directExit, directOk) = runSharkDirect(softReboot)
                     exit = directExit
                     success = directOk
                     return@launch
@@ -2666,12 +2666,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /* Jailbreak execution channel. REMOTE keeps the proven Stellar/Shizuku
-     * shell pipeline for the 98260 runners; APP_DIRECT runs the vendored
-     * CVE-2026-43499 ghostlock engine inside the app sandbox - no ADB,
-     * no Stellar, no Shizuku. */
+     * shell pipeline for the 98260 runners; APP_DIRECT runs the SAME 98260
+     * shark engine inside the app sandbox (perf self-sampling + fixed
+     * frame, no tracefs) - no ADB, no Stellar, no Shizuku. */
     private enum class ExecMode(val fullLabel: String) {
         REMOTE("Stellar / Shizuku (98260)"),
-        APP_DIRECT("App-direct, no PC (43499)")
+        APP_DIRECT("App-direct, no PC (Shark 98260)")
     }
 
     private enum class ExploitKind(val fullLabel: String) {
@@ -2706,18 +2706,24 @@ class MainActivity : ComponentActivity() {
                 (kernelVersion.contains("gdd6fd5c98918") ||
                     kernelVersion.contains("g690108013dcc")))
 
-    /* ===== App-direct (CVE-2026-43499, no ADB / Stellar / Shizuku) ===== */
+    /* ===== App-direct (CVE-2026-98260 SHARK engine, no ADB / Stellar / Shizuku) =====
+     * Owner directive 2026-11-16: the app-direct mode MUST run the shark
+     * engine (CVE-2026-98260 posix-cpu-timers race), not the 43499 futex
+     * engine. The x6873 runner carries the app-domain engine: perf
+     * self-sampling leaks + the fixed linear-map frame (no tracefs). */
 
-    /** Kernels carrying a bundled GLK1 profile can run the app-direct 43499
-     * engine inside the app sandbox (ghostlock-app model). The 98260 runners
-     * cannot: their observation channel needs the shell tracefs access. */
-    private fun appDirectProfile(): String? = GHOSTLOCK_PROFILES[kernelVersion]
-
-    private fun appDirectEngineInstalled(): Boolean =
-        File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE).isFile
+    /** Per-kernel SHARK runners whose engine carries the app-domain
+     * support (perf self-sampling + fixed-frame writes, no tracefs). */
+    private fun appDirectRunner(): String? {
+        val runner = when (exploit) {
+            ExploitKind.CVE61157 -> "libk61157.so"
+            else -> null
+        } ?: return null
+        return if (File(applicationInfo.nativeLibraryDir, runner).isFile) runner else null
+    }
 
     private fun appDirectAvailable(): Boolean =
-        exploit != ExploitKind.UNSUPPORTED && appDirectProfile() != null && appDirectEngineInstalled()
+        exploit != ExploitKind.UNSUPPORTED && appDirectRunner() != null
 
     /** Effective mode: the persisted choice, or app-direct forced when no
      * Stellar/Shizuku backend is running (REMOTE cannot execute then). */
@@ -2730,14 +2736,16 @@ class MainActivity : ComponentActivity() {
         addLog("Execution mode: ${mode.fullLabel}")
     }
 
-    /** App-direct jailbreak: spawn the vendored ghostlock engine
-     * (libghostlock.so) with a plain ProcessBuilder inside the app sandbox,
-     * feed it the bundled GLK1 profile, and let its root child run the
-     * manager ksud late-load. No privileged backend involved. */
-    private suspend fun runGhostlockDirect(softReboot: Boolean): Pair<Int, Boolean> {
-        val profileAsset = appDirectProfile()
-        if (profileAsset == null || !appDirectEngineInstalled()) {
-            addLog("App-direct engine or profile missing for $kernelVersion")
+    /** App-direct jailbreak: spawn the SHARK runner (libk*.so run) with a
+     * plain ProcessBuilder inside the app sandbox (LOCAL backend) and the
+     * app-domain env: PYB110_APP_DOMAIN switches the engine to perf
+     * self-sampling + the fixed linear frame, the ksud path comes from
+     * PackageManager, and the root script writes the per-run ksu.log
+     * markers the verdict polls. No privileged backend involved. */
+    private suspend fun runSharkDirect(softReboot: Boolean): Pair<Int, Boolean> {
+        val runner = appDirectRunner()
+        if (runner == null) {
+            addLog("App-direct engine missing for $kernelVersion")
             return -1 to false
         }
         val initialManager = if (manager == ManagerKind.DYNAMIC) ManagerKind.KERNELSU else manager
@@ -2753,12 +2761,12 @@ class MainActivity : ComponentActivity() {
             addLog("Manager not installed (or has no libksud.so): ${initialManager.pkg}. Install the manager APK first.")
             return -1 to false
         }
-        val homeDir = File(filesDir, "ghostlock")
+        val homeDir = File(filesDir, "shark")
         if (!homeDir.isDirectory) homeDir.mkdirs()
         val runDir = File(homeDir, "run")
         if (!runDir.isDirectory) runDir.mkdirs()
         /* Per-run evidence: rotate the previous run's ksu.log away so its
-         * markers can never satisfy this run's verdict (the root child
+         * markers can never satisfy this run's verdict (the root script
          * rewrites the file from scratch; one generation is kept for field
          * debugging). */
         runCatching {
@@ -2769,30 +2777,30 @@ class MainActivity : ComponentActivity() {
                 runLog.renameTo(prev)
             }
         }
-        val profile = File(homeDir, profileAsset)
-        runCatching {
-            if (!profile.isFile || profile.length() == 0L) {
-                assets.open("ghostlock_profiles/$profileAsset").use { input ->
-                    profile.outputStream().use { output -> input.copyTo(output) }
-                }
-            }
-        }.onFailure {
-            addLog("Failed to stage the kernel profile: $it")
-            return -1 to false
-        }
-        addLog("Starting CVE-2026-43499 (app-direct - no ADB / Stellar / Shizuku)")
+        addLog("Starting CVE-2026-98260 SHARK (app-direct - no ADB / Stellar / Shizuku)")
         addLog("Manager ${initialManager.fullLabel}; ksud=$ksud")
         val cmd = arrayOf(
-            File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE).absolutePath,
-            "--load-prebuilt-profile", profile.absolutePath
+            File(applicationInfo.nativeLibraryDir, runner).absolutePath,
+            "run"
         )
         val env = arrayOf(
             "PATH=/system/bin:/system/xbin:/data/adb/ksu/bin",
             "HOME=${runDir.absolutePath}",
-            "GHOSTLOCK_HOME=${runDir.absolutePath}",
             "TMPDIR=${runDir.absolutePath}",
-            "GHOSTLOCK_KSU_LOG=${File(runDir, "ksu.log").absolutePath}",
-            "GHOSTLOCK_KSUD=$ksud"
+            "PYB110_APP_DOMAIN=1",
+            "PYB110_DIR=${runDir.absolutePath}",
+            "PYB110_FILES_DIR=${filesDir.absolutePath}",
+            "PYB110_MANAGER=${initialManager.manager}",
+            "PYB110_KMI=android14-6.1",
+            "PYB110_KSUD=$ksud",
+            "PYB110_KSU_LOG=${File(runDir, "ksu.log").absolutePath}",
+            "PYB110_LATE_LOAD=1",
+            "PYB110_GATE=0",
+            "PYB110_SUSFS=0",
+            "PYB110_VFS=0",
+            "PYB110_UNIVERSAL=0",
+            "PYB110_UNLOAD_GUARD=0",
+            "PYB110_DISABLE_ANTIROOT=0"
         )
         val p = PrivService.newProcessFor(PrivBackend.LOCAL, cmd, env, runDir.absolutePath)
         val out = p.getInputStream()
@@ -2827,7 +2835,7 @@ class MainActivity : ComponentActivity() {
             val state = readDeviceState(true)
             active = state.first
             se = state.second
-            if (active || rc != 0 || ghostlockRunLogVerdict() == 0) break
+            if (active || rc != 0 || sharkRunLogVerdict() == 0) break
             if (i < 12) delay(1000L)
         }
         withContext(Dispatchers.Main) {
@@ -2836,7 +2844,7 @@ class MainActivity : ComponentActivity() {
         }
         addLog(
             if (active) "KernelSU module loaded"
-            else "KernelSU module not loaded (no load marker in ghostlock/run/ksu.log of this run)"
+            else "KernelSU module not loaded (no load marker in shark/run/ksu.log of this run)"
         )
         if (rc == 0 && active) {
             if (softReboot) {
@@ -2878,15 +2886,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val REQ_SHIZUKU = 1001
-        private const val GHOSTLOCK_ENGINE = "libghostlock.so"
-
-        /* Kernels with a bundled GLK1 binary profile for the app-direct
-         * CVE-2026-43499 engine (exported from the GhostLock profile set -
-         * same GL device measurements as the 98260 port constants). */
-        private val GHOSTLOCK_PROFILES: Map<String, String> = mapOf(
-            "6.1.157-android14-11-ga8b0b542991e-ab15601211" to
-                "6.1.157-android14-11-ga8b0b542991e-ab15601211.glk1"
-        )
 
         private val PROFILE_BY_RELEASE: Map<String, ExploitKind> = mapOf(
             "6.18.21-android17-5-gf957accaf563-ab15926176-4k" to ExploitKind.CVE61821,

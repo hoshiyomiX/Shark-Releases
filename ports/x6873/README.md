@@ -497,7 +497,7 @@ Reading of the record:
    on-device: BakaSU opens and reports working, `su -c id` returns
    `uid=0(root)`, and a re-run prints `ALREADY_LOADED`.
 
-## One-tap (app-direct) feasibility — verdict
+## One-tap (app-direct) feasibility — verdict (SUPERSEDED 2026-11-16 — see the SHARK app-direct record below)
 
 The recurring question for this port: can the chain run one-tap from
 the app's own sandbox (untrusted_app), ghostlock-app style, without
@@ -549,7 +549,63 @@ What one-tap on X6873 looks like instead:
    That is engine work with its own porting checklist; the 98260
    chain stays the Stellar/Shizuku path.
 
-## App-direct SHIPPED (2026-11-15) — the 43499 channel is in the APK
+## App-direct SHARK (2026-11-16) — the 98260 engine in the app sandbox
+
+Owner directive: the App-direct execution mode must run the SHARK
+engine (CVE-2026-98260), not the 43499 futex engine.  The "engine
+rework" this section above called for has landed:
+
+| tracefs dependency (shell flow) | app-domain replacement |
+|---|---|
+| KASLR slide from trace call-site histogram | FIXED linear-map frame: `slide = (LINEAR_MAP_BASE + KERNEL_PHYS_LOAD) - 0xffffffc080000000` (profile row; `LINEAR_MAP_BASE 0xffffff7fc0000000` = the base the 12:43 run derived at runtime, `KERNEL_PHYS_LOAD 0x40000000`), hard-validated against `APP_EXPECTED_SELINUX 0xffffff800225b820` — the exact address the 2026-11-16 09:04 ghostlock field run wrote SELinux through from the same app sandbox |
+| child task/cred from kmem_cache_alloc events | perf SELF-sampling (ghostlock `perf_find_task` mechanism, field-proven on this ROM from untrusted_app, 216/256 votes): the child opens its OWN perf event (pid=0) and getpid-loops; kernel-mode `PERF_SAMPLE_REGS_INTR` registers are voted; two windows must agree |
+| victim k_itimer address from the alloc stream | the exec thread creates THE victim in a parent-triggered window ('S' sync) and self-samples it during a `timer_getoverrun(victim)` loop; candidates filtered to the posix_timers_cache stride (`(v & 0x1fff) % 0x140 == 0`), the thread's own task excluded, two windows must agree (fail-closed, retryable) |
+| free_seen/burst page gates | TIME-BASED cadence: zombie -> churn1+round1 at t=0, +400ms, +800ms, settle to 1200ms, reap (the 12:43 field cadence: free ~40ms after churn, hit ~35ms after free; phase-1 spray pre-armed so an order-1 alloc is in flight at the free) |
+| rd_batch kprobe reads | dropped — every write stays uid-verified through the child report; the seccomp stage uses the documented static offsets |
+| /proc/slabinfo stats | optional (silently skipped when unreadable) |
+
+New for the app domain (untrusted_app specifics):
+
+- **Seccomp strip stage**: the app inherits a seccomp filter that blocks
+  `finit_module`; two extra zero-write stages (task+0 `thread_info.flags`
+  clearing TIF_SECCOMP, task+0x900 `seccomp.mode`) run between fake_uid
+  and selinux — the ghostlock W3 writes, field-proven on this device at
+  09:04.  The rooted child then forks a filter-free worker that execs
+  the root script.
+- **Root script (ghostlock model, field-proven 09:04)**: policy fixup
+  (netlink flag restore + load_policy loop) -> `ksud late-load` ->
+  module watch -> per-run `ksu.log` markers (`[+] KernelSU module
+  loaded` / `[!] KernelSU module not loaded`) -> enforcing restore.
+  The markers are the app verdict AND the runner [2/4] fallback
+  (`/proc/modules` goes dark for untrusted_app once enforcing returns).
+- **iomem cache**: the root script dumps /proc/iomem into the app dir;
+  the next run's preflight parses the `Kernel code` base and refuses to
+  plant if the kernel physical load ever moves (fail-closed against
+  future KASLR drift).
+- **Frame guard**: the preflight aborts before touching any timer unless
+  `SELINUX_STATE_STATIC + slide - 7 == APP_EXPECTED_SELINUX`.
+
+Residual risks (accepted; the field loop iterates):
+
+- The perf victim leak is a NEW mechanism class (self-sampled getoverrun
+  registers).  The top-3 histogram is logged per window
+  (`[perf] victim leak top=... cand2=... cand3=...`) — if agreement fails
+  the round refuses and retries; a systematically wrong winner would
+  show as a distinct signature in the log.
+- Without the trace burst gate, reaping after a reclaim miss (a system
+  allocation stealing the freed order-1 page) can panic — the same
+  one-attempt-per-clean-boot discipline applies.
+
+Expected app log on success: `Starting CVE-2026-98260 SHARK (app-direct)`
+-> `[app] frame: ... selinux_target=0xffffff800225b820` -> `[perf] task
+self-sample top=...` -> `[+] stage fake_cred ... mode=fake` ->
+`[+] stage fake_uid` -> `stage tif_flags` -> `stage seccomp` ->
+`[+] stage selinux target=0xffffff800225b820` -> `PLANT_CRED_OK` /
+`PARKED=1` -> `[child] woke uid=0` -> root script markers -> `MODULE_LOADED`
+-> `DONE` -> the app prints `KernelSU module loaded` + `RESULT=SUCCESS`
+and opens the manager.
+
+## App-direct SHIPPED (2026-11-15) — the 43499 channel is in the APK (SUPERSEDED 2026-11-16: replaced by the SHARK app-direct above; libghostlock.so and the GLK1 asset were removed from the APK by the owner's directive — the vendored core stays under third_party/ as the reference for the perf/root-script models)
 
 Option 2 above landed. The release APK now offers an "Execution mode"
 selector (and auto-selects it when no Stellar/Shizuku backend runs):

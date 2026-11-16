@@ -1,5 +1,14 @@
 # App-direct execution channel (no ADB / Stellar / Shizuku)
 
+> **SUPERSEDED 2026-11-16 (owner directive).** The app-direct mode now runs
+> the **SHARK engine (CVE-2026-98260)** in the app sandbox — `libghostlock.so`
+> and the GLK1 asset were removed from the APK. The 98260 app-domain engine
+> replaces every tracefs dependency (perf self-sampling leaks + the fixed
+> linear-map frame + time-based race cadence + the seccomp strip + this
+> document's root-script model). See `ports/x6873/README.md`, section
+> "App-direct SHARK (2026-11-16)". The text below documents the historical
+> 43499 design and stays for the record.
+
 The app can jailbreak supported kernels entirely from its own sandbox:
 no Stellar, no Shizuku, no ADB, no PC. This document describes the channel
 as shipped in this repository.
