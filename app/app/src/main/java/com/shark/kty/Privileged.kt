@@ -28,12 +28,19 @@ class PrivProcess(
     private val inS: InputStream,
     private val outS: OutputStream,
     private val errS: InputStream,
-    private val waiter: () -> Int
+    private val waiter: () -> Int,
+    private val killer: (() -> Unit)? = null
 ) {
     fun getInputStream(): InputStream = inS
     fun getOutputStream(): OutputStream = outS
     fun getErrorStream(): InputStream = errS
     fun waitFor(): Int = waiter()
+
+    /** Best-effort terminate for watchdog timeouts; a no-op on the remote
+     * backends, which expose no kill handle. */
+    fun destroy() {
+        killer?.invoke()
+    }
 }
 
 object PrivService {
@@ -108,8 +115,10 @@ object PrivService {
         return PrivProcess(
             p.inputStream,
             p.outputStream,
-            p.errorStream
-        ) { p.waitFor() }
+            p.errorStream,
+            { p.waitFor() },
+            { p.destroy() }
+        )
     }
 
     fun openManager(context: Context) {
