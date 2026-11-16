@@ -771,3 +771,101 @@ round, then `[child] woke uid=0 euid=0`, `[+] child report ...`,
 `LATE_LOAD_CMD=...` and the runner's `[2/4]` -> `MODULE_LOADED` ->
 `[3/4]` -> `[4/4] DONE`. All seven engines pass `gcc -fsyntax-only`;
 the slide unit test (19 assertions) still passes.
+
+## Field-fix record: 2026-11-15 16:58 round-3 window panic (stage reorder + panic forensics)
+
+Fifth field run (16:58, CI build `2621e54`) — the owner's verdict
+(2026-11-16): the log's truncated line is the kernel-panic point and
+the phone rebooted. The run had passed every prior milestone: slide
+unanimous (`0x2498c00000`, votes=3), round 1 fake-cred landed in 33 ms
+(`A=0xffffff81019cc800`, target `task+0x838`), round 2 selinux zero
+landed in 38 ms (`0xffffffe51ae5b820`), `panic_on_warn` read 0 (no
+stage), and round 3 (`stage fake_uid target=0xffffff81019cc808
+mode=zero`) staged — then the log cut at `[dbg] plant1 spray round=1
+at free (no churn)` and the kernel panicked.
+
+Root cause — a pre-reap window panic, not the repair write:
+
+- `main()` runs `setvbuf(stdout, NULL, _IONBF, 0)`, so every `logf`
+  line hits the fd the moment it is printed; the truncation point is
+  therefore the EXACT panic boundary (the 14:23 run proved the same
+  property in reverse: its log stopped right before `[+] reaped` when
+  the reap itself panicked).
+- The reap (the `waitpid` that fires `cleanup_timers` -> the erase ->
+  the write) happens only AFTER `[+] plant1 free_seen=1 burst hit=1`
+  prints. That line never appeared — so the round-3 erase NEVER
+  EXECUTED. The panic happened in the free->hit window: the third
+  socket spray in flight, the round-3 zombie unreaped and inert, the
+  fake child still blocked in `read(3)`.
+- Mechanism correction for the 15:31 record above: that run shows the
+  SAME signature (cut at `spray round=1 at free`, pre-hit), so its
+  selinux erase never ran either — the "non-canonical erase target
+  faulted" mechanism was wrong. Both window panics were asynchronous
+  derefs of accumulated exploit state; in 15:31 the garbage slide had
+  poisoned the round-1 fake cred's `user`/`user_ns`/`ucounts`/
+  `group_info` pointers on a live blocked task. The slide fix was
+  still the right fix — it cured the cred pointers — but via the
+  async-deref class, not the erase.
+- What the 16:58 run left in that class: the fake cred on the blocked
+  child still carried `uid/gid` = the node address (a kernel pointer
+  VALUE, `0xffffff81019cc8xx` as a uid_t) — the decoy encoding keeps
+  it as the `rb_next` walk-up key — and it would have stayed garbage
+  through the entire third race until the repair write.
+- The repair cannot be fused into round 1 (geometry proof against the
+  transcribed bytecode): `parent_color` must equal `A` (it is both the
+  value installed into `task->cred` and the walk parent), so the
+  erase's change-child dirt always lands on `A+8` (uid/gid) or
+  `A+0x10` (suid/sgid); every two-iteration variant either moves the
+  garbage between those fields or sends `rb_next`'s descend path into
+  live task memory (`task+0x848`), and the two-children erase path is
+  the sim's WALK HAZARD. The decoy v2 + one kernel-side repair write
+  is the only safe shape.
+
+Fix (`exploit/src/plant_core.inc`, shared by every engine):
+
+1. **Stage reorder — repair first, selinux last.** The chain is now
+   `fake_cred` -> `fake_uid` (immediately after the install) ->
+   `selinux` (last, immediately before the wake) -> optional
+   `panic_on_warn`. The garbage-uid cred now exists for ONE round
+   instead of two, and the final system-wide mutation lands as late as
+   possible. The erase mechanics per round are byte-identical to the
+   field-proven ones (sim-verified: fake mode since 69f0c62, zero mode
+   since 4d82822).
+2. **Panic forensics.** `dump_pstore_tail(50)` runs FIRST in `main`
+   (right after the pid line): when a boot follows a kernel panic, the
+   previous run's console-ramoops tail — panic header, PC/LR, call
+   trace — is printed at the top of the new run's log. One attempt per
+   clean boot makes the next run the diagnostic for the previous one's
+   panic; a recurrence is pinned instead of guessed. Missing/unreadable
+   pstore logs one line and continues (shell uid 2000 often cannot
+   read pstore).
+3. **The fake child exits after the late-load** instead of parking
+   forever. The parked child kept a task with garbage `suid/sgid` in
+   the table for the rest of the boot; exiting removes it while the
+   fake cred itself survives (`usage=0`, `put_cred` 0->-1 never frees)
+   inside the page held by the PARENT's socket spray — the parent still
+   parks and holds the page. The report was already consumed over pipe
+   4, and the parent never waits this child, so the exit leaves at
+   most one harmless zombie. (The ColorOS HOOKS_GATE flow keeps its
+   worker-fork + park shape — its gate handshake needs the child
+   alive.)
+
+Validation: `sim-decoy.py` extended to the reordered 3-round chain —
+fake_cred 1 erase / 0 WARNs / install intact, fake_uid 1 erase /
+0 WARNs / uid+gid zeroed / install intact, selinux 1 erase / 0 WARNs /
+enforcing zeroed / cred state intact, and NO writes outside the
+reclaimed pages / `task->cred` / the dead task's queue head. All eight
+engines pass `gcc -fsyntax-only`; the k61157 full compile passes; the
+slide unit test still passes.
+
+Expected log on the next clean-boot run: `[pstore] ...` lines first
+(if the previous boot ended in a panic, its trace is printed here),
+then round 1 (`fake_cred`) as before, then the NEW ORDER — `stage
+fake_uid target=<A+8> mode=zero` landing, THEN `stage selinux
+target=<...b820> mode=zero` — then `cred writes landed, waking child`,
+`[child] woke uid=0 euid=0`, the child report, `[fake] ... one-shot
+late-load`, `[fake] late-load done; child exiting`, `PLANT_CRED_OK`,
+`PARKED=1` and the runner's `[2/4]` -> `MODULE_LOADED` -> `[3/4]` ->
+`[4/4] DONE`. If anything panics again: reboot, run once more on the
+clean boot, and read the `[pstore]` block at the top — it contains the
+previous panic's call trace.
