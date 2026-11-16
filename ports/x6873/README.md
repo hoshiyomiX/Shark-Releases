@@ -587,11 +587,15 @@ New for the app domain (untrusted_app specifics):
 
 Residual risks (accepted; the field loop iterates):
 
-- The perf victim leak is a NEW mechanism class (self-sampled getoverrun
-  registers).  The top-3 histogram is logged per window
-  (`[perf] victim leak top=... cand2=... cand3=...`) — if agreement fails
-  the round refuses and retries; a systematically wrong winner would
-  show as a distinct signature in the log.
+- The perf victim leak is a NEW mechanism class (self-sampled timer
+  syscall registers).  Round-5 (2026-11-16 16:12) returned V=0(n=0) six
+  windows in a row while the getpid window always found the task
+  pointer; the round-5 fix samples three vehicles (the getoverrun pair
+  + timer_gettime + a dormant timer_settime re-arm) and prints each
+  window's raw histogram (`[perf] victim leak w<n> ... raw=[...]`) so
+  the next log pins the failure class; a systematically wrong winner
+  would show as a distinct signature in the log (see the 16:12
+  field-fix record at the end of this file).
 - Without the trace burst gate, reaping after a reclaim miss (a system
   allocation stealing the freed order-1 page) can panic — the same
   one-attempt-per-clean-boot discipline applies.
@@ -1050,3 +1054,74 @@ Notes:
   defaults to "not owned" — the unlock stage always attempts W1 on a
   clean boot; the already-rooted-same-boot corner keeps the runner's
   own ALREADY_LOADED path.
+
+## Field-fix record: 2026-11-16 16:12 round-5 clean-boot run — victim leak V=0 (multi-vehicle vote)
+
+Build 56768ff (versionCode 94), MANAGER=BakaSU, clean boot
+(`BOOT_REASON=kernel_panic`, no `ALREADY_LOADED` — the 09:04 LKM is
+gone with the reboot).  The round-4 validation map landed exactly as
+designed up to the predicted frontier:
+
+* unlock W1 7.8 s (`UNLOCK_OK` at T+7806 ms) — the 14:35 perf-EACCES
+  class is gone: `[app] perf diag: paranoid=-1 enforce=0 ...` and the
+  perf gate passes; the round-3 fix is PROVEN in the field.
+* the child task self-sample agreed on the first try (1232/17 then
+  1260/5); `cred_field_target = task+0x838`.
+* the 98260 app-direct chain then died at the plant1 victim leak — the
+  exact "perf victim leak agreement" frontier the round-2 plan predicted:
+
+```
+[+] stage fake_cred target=0xffffff82e9dd2db8 mode=fake attempt=1
+[perf] victim leak top=0(0) agreed=0 task=0xffffff816bc992c0 cand2=0(0) cand3=0(0)
+[-] plant1 victim leak not trusted (V=0 agreed=0); retryable     (x6, exit 13)
+```
+
+Diagnosis:
+
+* Window A (getpid) found the exec thread's task pointer every time
+  (`task=` changes per attempt = fresh exec threads; the identical
+  values in the instant app-retry are task_struct slab reuse, not a
+  second bug) — so the perf event, the register sampling, the parse and
+  the direct-map range check all work in the app sandbox.
+* `TIMER_ALLOC=0x140` is the family constant (probe bundle + the 6.6
+  sibling row), so the stride filter is not obviously wrong — but the
+  evidence line only ever printed the stride-FILTERED candidates, and
+  with the k_itimer absent everything printed 0(0).  Whether the victim
+  pointer (a) never sat in a sampled register during the getoverrun
+  loop, (b) sat there under a different stride, or (c) the loop
+  fast-failed — could not be distinguished from the log.  The fix must
+  both raise the catch odds and make the next log decisive.
+
+Fix (this build, versionCode 95):
+
+1. `app_leak_victim` now samples FOUR vehicle windows around the same
+   victim timer: the original getoverrun pair (byte-identical), plus
+   `timer_gettime` (read-only, a longer posix-cpu-timer body) and a
+   `timer_settime` dormant 3600 s re-arm (the disassembly ground truth
+   holds the k_itimer in x23 across the whole posix_cpu_timer_set
+   body).  Both new vehicles are normal healthy-timer kernel paths; no
+   stale/fake node is ever touched, so the RB_EMPTY_NODE WARN class
+   cannot fire here.
+2. Every window prints its full evidence, even when the vote refuses:
+   `[perf] victim leak w<n> <go|gt|st> top=<filtered>(n) hn=<hist size> err=<failures> raw=[<unfiltered top-3>]`
+   — the raw histogram was the missing tuning evidence.
+3. The vote requires a stride-passing candidate to be the filtered
+   top-1 of >= 2 windows with >= 1000 votes in each (the 1232-vote
+   getpid task pointer is the proven single-register signal level);
+   the summary line carries `wins=k/4 floor=1000`.
+
+Round-6 read of the next log:
+
+* `hn=0` on a window -> the event produced no kernel-pointer samples at
+  all; `err>0` -> the loop fast-fails (timer validity class); a raw
+  top-1 with a huge count that fails the 0x140 stride -> the real
+  k_itimer under a different stride (fix TIMER_ALLOC); a recurring
+  non-timer pointer winning -> entry-path noise (raise the floor or
+  exclude it).
+* Success looks like: `w1 go top=V(n>=1000)` + `w3 gt top=V(...)` ->
+  `agreed=1 wins=2/4` -> `[+] plant1 victim report: V=<k_itimer>` ->
+  the decoy layout -> the race -> `PLANT_CRED_OK` -> `[child] woke
+  uid=0` -> the root script -> `MODULE_LOADED` -> `RESULT=SUCCESS`.
+* The panic path is unchanged: one attempt per clean boot; pstore
+  stays EACCES (errno=13) in the app domain so the previous panic's
+  trace remains unavailable there.
