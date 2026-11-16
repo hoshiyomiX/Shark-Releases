@@ -85,7 +85,7 @@ object PrivService {
             PrivBackend.STELLAR -> {
                 @Suppress("UNCHECKED_CAST")
                 val p = Stellar.newProcess(cmd as Array<String?>, env as Array<String?>?, dir)
-                PrivProcess(p.getInputStream(), p.getOutputStream(), p.getErrorStream()) { p.waitFor() }
+                PrivProcess(p.getInputStream(), p.getOutputStream(), p.getErrorStream(), waiter = { p.waitFor() })
             }
             PrivBackend.SHIZUKU -> {
                 val binder = Shizuku.getBinder() ?: error("Shizuku binder null")
@@ -94,8 +94,9 @@ object PrivService {
                 PrivProcess(
                     ParcelFileDescriptor.AutoCloseInputStream(p.getInputStream()),
                     ParcelFileDescriptor.AutoCloseOutputStream(p.getOutputStream()),
-                    ParcelFileDescriptor.AutoCloseInputStream(p.getErrorStream())
-                ) { p.waitFor() }
+                    ParcelFileDescriptor.AutoCloseInputStream(p.getErrorStream()),
+                    waiter = { p.waitFor() }
+                )
             }
             PrivBackend.LOCAL -> newLocalProcess(cmd, env, dir)
         }
