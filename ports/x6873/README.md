@@ -568,9 +568,10 @@ selector (and auto-selects it when no Stellar/Shizuku backend runs):
   backend Cve2026_43499 — ALL MATCH the constants table above.
 - App flow: `MainActivity.runGhostlockDirect()` (ProcessBuilder spawn,
   `GHOSTLOCK_KSUD` pinned to the selected manager's libksud.so via
-  PackageManager, work dir `filesDir/ghostlock/run`, direct
-  `/proc/modules` + selinux read verification). Design doc:
-  `docs/app-direct.md`.
+  PackageManager, work dir `filesDir/ghostlock/run`; verification through
+  a live `/proc/modules` read while permissive, falling back to the per-run
+  `ghostlock/run/ksu.log` load markers — see the 2026-11-16 record below).
+  Design doc: `docs/app-direct.md`.
 - The 98260 Stellar/Shizuku path is untouched and remains the default
   when a backend is running.
 
@@ -869,3 +870,62 @@ late-load`, `[fake] late-load done; child exiting`, `PLANT_CRED_OK`,
 `[4/4] DONE`. If anything panics again: reboot, run once more on the
 clean boot, and read the `[pstore]` block at the top — it contains the
 previous panic's call trace.
+
+## Field record: 2026-11-16 09:04 app-direct SUCCESS — verdict false-negative fixed
+
+Sixth field run (09:04:42, CI build `a954550`, app-direct 43499 engine,
+manager BakaSU). The exploit itself was PERFECT — every stage green on
+the first attempt of every round:
+
+- W1 SELinux permissive: route `done=1 calls=1 success=1 clean=1/1` —
+  first TCP-zerocopy entry attempt.
+- W2 root: `child uid = 0` / `child is root!` (perf task 236/256 votes).
+- W3 seccomp: TIF_SECCOMP + mode writes both `clean=1/1`; probe
+  `finit_module = 0x16` (errno 22 = EINVAL — the syscall executes,
+  seccomp does not block it); `child seccomp fully bypassed`.
+- Handoff: child alive, root shell worker pid 32451, script fd open;
+  root script ran the policy fixup + `ksud late-load` chain.
+- Engine verdict: `[+] KernelSU ready` (its handoff probe found the
+  `[+] KernelSU module loaded` marker in the per-run `ksu.log`) and
+  `enforce=1 (enforcing)` — SELinux restored by design.
+- `exploit exit=0`. Owner confirmed on-device: the jailbreak works
+  (BakaSU active).
+
+But the app log ended `KernelSU module not loaded` -> `RESULT=FAIL` —
+verdict: FALSE NEGATIVE, not an exploit failure.
+
+Root cause: `MainActivity.readDeviceState(local=true)` verified the
+module with a direct `/proc/modules` read from the app sandbox. Once the
+root script restores SELinux enforcing (which a correct run always
+does), `untrusted_app` cannot read `/proc/modules` (EACCES) — the exact
+wall the engine's own `handoff_probe.cpp` documents
+("untrusted_app loses /proc/modules once enforcing is restored"),
+which is why the engine watches the per-run `ksu.log` markers instead.
+The app did not, so every successful app-direct run self-reported FAIL
+after enforcing came back. Side effects: `launchManager()` and the
+soft-reboot path (both gated on `rc == 0 && active`) never ran.
+
+Fix (`MainActivity.kt` only; engine and root script untouched):
+
+1. `readDeviceState(local=true)` verifies through two channels: a live
+   `/proc/modules` read (works while permissive, before the module-init
+   re-enforce) OR the per-run `ghostlock/run/ksu.log` markers
+   (`[+] KernelSU module loaded` / `[+] KernelSU already loaded`),
+   guarded to the current boot (a late-loaded LKM does not survive
+   reboot — mtime vs `now - elapsedRealtime()`, 60 s grace);
+   `[!] KernelSU module not loaded` counts as a definitive failure.
+2. `runGhostlockDirect()` rotates the previous run's `ksu.log` to
+   `ksu.log.prev` before spawning the engine — per-run evidence, one
+   generation kept for field debugging; stale markers can never
+   satisfy a new run's verdict.
+3. After engine exit the verdict polls the evidence up to 12 s
+   (1 s interval) before concluding not-loaded — the engine can exit
+   before a slow late-load writes its marker; rc != 0 or the failure
+   marker stops the poll immediately.
+4. The failure message now names the evidence file, so a field log
+   distinguishes "module genuinely not loaded" from "check failed".
+
+Expected log on the next run: `exploit exit=0` -> (normally instant,
+up to 12 s worst case) `KernelSU module loaded` -> `RESULT=SUCCESS`,
+and the manager opens automatically (or the soft reboot runs when
+enabled). The engine lines are unchanged.

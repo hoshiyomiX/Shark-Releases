@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
@@ -117,6 +118,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.core.content.FileProvider
 import java.io.File
@@ -2251,12 +2253,18 @@ class MainActivity : ComponentActivity() {
 
     private fun readDeviceState(local: Boolean = false): Pair<Boolean, String> {
         if (local) {
-            /* App-domain direct reads: the shell one-liner pipeline needs a
-             * privileged backend, but untrusted_app can read both files. */
-            val active = runCatching {
+            /* App-domain direct reads. /sys/fs/selinux/enforce stays readable
+             * from untrusted_app, but /proc/modules does NOT once the root
+             * script restores enforcing - the engine's handoff probe hits the
+             * same wall and falls back to the per-run ksu.log it just wrote
+             * ("untrusted_app loses /proc/modules once enforcing is
+             * restored"). Verify through both channels: a live /proc/modules
+             * read works while permissive, the run-log markers work always. */
+            val modulesVisible = runCatching {
                 File("/proc/modules").readLines()
                     .any { it.startsWith("kernelsu ") && it.contains(" Live ") }
             }.getOrDefault(false)
+            val active = modulesVisible || ghostlockRunLogLoaded()
             val se = runCatching {
                 when (File("/sys/fs/selinux/enforce").readText().trim()) {
                     "1" -> "Enforcing"
@@ -2277,6 +2285,32 @@ class MainActivity : ComponentActivity() {
         val se = mapSelinux(lines.getOrNull(1)?.trim().orEmpty())
         return active to se
     }
+
+    /* Tri-state verdict over the per-run ghostlock root-script log:
+     * 1 = module loaded, 0 = script-reported failure, -1 = no verdict yet.
+     * The root script truncates and rewrites the file on every run and
+     * chmods it 644, so the app can read back the same evidence the
+     * engine's handoff probe used. A late-loaded LKM does not survive a
+     * reboot, so markers only count when the log was written during the
+     * current boot. */
+    private fun ghostlockRunLogVerdict(): Int {
+        val log = File(filesDir, "ghostlock/run/ksu.log")
+        if (!log.isFile) return -1
+        val bootWallClockMs = System.currentTimeMillis() - SystemClock.elapsedRealtime()
+        val fromCurrentBoot = runCatching {
+            log.lastModified() >= bootWallClockMs - 60_000L
+        }.getOrDefault(false)
+        if (!fromCurrentBoot) return -1
+        val text = runCatching { log.readText() }.getOrDefault("")
+        return when {
+            text.contains("[+] KernelSU module loaded") -> 1
+            text.contains("[+] KernelSU already loaded") -> 1
+            text.contains("[!] KernelSU module not loaded") -> 0
+            else -> -1
+        }
+    }
+
+    private fun ghostlockRunLogLoaded(): Boolean = ghostlockRunLogVerdict() == 1
 
     private fun updateAntiRootGuard(value: Boolean) {
         antiRootGuard = value
@@ -2723,6 +2757,18 @@ class MainActivity : ComponentActivity() {
         if (!homeDir.isDirectory) homeDir.mkdirs()
         val runDir = File(homeDir, "run")
         if (!runDir.isDirectory) runDir.mkdirs()
+        /* Per-run evidence: rotate the previous run's ksu.log away so its
+         * markers can never satisfy this run's verdict (the root child
+         * rewrites the file from scratch; one generation is kept for field
+         * debugging). */
+        runCatching {
+            val runLog = File(runDir, "ksu.log")
+            if (runLog.isFile) {
+                val prev = File(runDir, "ksu.log.prev")
+                prev.delete()
+                runLog.renameTo(prev)
+            }
+        }
         val profile = File(homeDir, profileAsset)
         runCatching {
             if (!profile.isFile || profile.length() == 0L) {
@@ -2771,12 +2817,27 @@ class MainActivity : ComponentActivity() {
         t1.join(2000)
         t2.join(2000)
         addLog("exploit exit=$rc")
-        val (active, se) = readDeviceState(true)
+        /* The engine exits as soon as its own handoff poll is satisfied; if
+         * the root script is still finishing the late-load at that moment,
+         * the ksu.log marker lands after exit. Poll the evidence briefly
+         * before concluding the module is not loaded. */
+        var active = false
+        var se = ""
+        for (i in 1..12) {
+            val state = readDeviceState(true)
+            active = state.first
+            se = state.second
+            if (active || rc != 0 || ghostlockRunLogVerdict() == 0) break
+            if (i < 12) delay(1000L)
+        }
         withContext(Dispatchers.Main) {
             ksuActive = active
             selinuxText = se
         }
-        addLog(if (active) "KernelSU module loaded" else "KernelSU module not loaded")
+        addLog(
+            if (active) "KernelSU module loaded"
+            else "KernelSU module not loaded (no load marker in ghostlock/run/ksu.log of this run)"
+        )
         if (rc == 0 && active) {
             if (softReboot) {
                 addLog("Jailbreak complete; restarting zygote")
