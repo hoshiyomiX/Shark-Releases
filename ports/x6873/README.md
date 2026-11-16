@@ -985,3 +985,68 @@ Expected log on the next run: `exploit exit=0` -> (normally instant,
 up to 12 s worst case) `KernelSU module loaded` -> `RESULT=SUCCESS`,
 and the manager opens automatically (or the soft reboot runs when
 enabled). The engine lines are unchanged.
+
+## 2026-11-16 14:35 field run — perf EACCES on a clean enforcing boot (exit 13)
+
+Build a9eda16 (versionCode 93), MANAGER=BakaSU. The preflight fix worked
+(`PROBE_TRACE=skip(app-domain)` -> `PROBE_OK`, frame validated, selinux
+target matched). The run then died at the perf gate:
+
+```
+[-] perf_event_open failed errno=13 (app domain needs it)
+[-] perf self-sampling unavailable; the app engine cannot leak addresses - refusing
+PLANT_FAIL (enforce=unknown)      <- /system/bin/getenforce unreadable from
+exploit exit=13                     untrusted_app under enforcing (2nd signal)
+```
+
+Root cause — an architectural ordering difference between the two engines:
+
+* The 98260 app port (d9c98a6) needs its kernel-address leaks BEFORE its
+  first write: the victim k_itimer `V` (payload geometry) and the child
+  task (cred install target) both come from perf kernel-register
+  self-sampling. Under enforcing, SELinux denies `perf_event_open` for
+  `untrusted_app` -> the whole chain is blocked before it starts. The
+  `perf_event_open` attrs are byte-identical to the 09:04-proven
+  ghostlock `perf_find_task`, so the delta is the SELinux mode, not the
+  syscall.
+* The 43499 engine (09:04) is SELinux-first BY DESIGN —
+  `cve_2026_43499_backend.cpp`: "W1: disable SELinux before task
+  discovery". Its pre-W1 leak is KernelSnitch (futex-hash timing — no
+  privilege, no perf, works under enforcing), and every perf-dependent
+  stage (victim spawn, W2/W3) runs AFTER W1 made the device permissive.
+  That is why 09:04 succeeded on the same app sandbox.
+
+Fix — the 43499 W1 becomes the clean-boot unlock pre-stage (98260 stays
+the app-direct engine per the owner directive):
+
+1. `third_party/ghostlock-core`: `PYB110_UNLOCK_ONLY` stops the 43499
+   pipeline right after W1 (no victim spawn, no perf, no handoff) and
+   prints the `UNLOCK_OK` marker. `libghostlock.so` + the GLK1 profile
+   asset ship in the APK again; the CI builds the engine fresh.
+2. `MainActivity.runSharkDirect`: before spawning the 98260 runner, run
+   the unlock stage (`libghostlock.so --load-prebuilt-profile`, LOCAL
+   backend, 240 s watchdog). `UNLOCK_OK` -> continue; a miss -> continue
+   anyway and let the 98260 preflight fail-close (the 14:35 behavior is
+   preserved as the diagnostic path).
+3. k61157 app preflight logs the leak environment before the perf gate:
+   `[app] perf diag: paranoid=<n> enforce=<n> ctrl_useronly_errno=<n>`
+   (sentinels -999 unreadable / -998 unparseable). A user-space-only
+   control event (exclude_kernel=1) separates the paranoid DAC check
+   from the SELinux denial in the field log.
+
+Expected log on a clean enforcing boot (round 4):
+`[unlock] CVE-2026-43499 W1: ...` -> ghostlock W1 lines ->
+`UNLOCK_OK: SELinux permissive; perf self-sampling unblocked` ->
+`[unlock] SELinux permissive; continuing with the 98260 SHARK engine` ->
+the 14:35 sequence from `PROBE_KERNEL` onward, now with
+`[app] perf diag: ... enforce=0` and the perf gate passing ->
+the normal stage chain (map item 4+ of the round-2 plan).
+
+Notes:
+* A failed 98260 run after a landed unlock leaves the device permissive
+  until the next success (script restores) or reboot — retrying in the
+  same boot is warm by design; that is the field-loop procedure anyway.
+* `ksu_root_owned()` under enforcing cannot read /proc/modules and
+  defaults to "not owned" — the unlock stage always attempts W1 on a
+  clean boot; the already-rooted-same-boot corner keeps the runner's
+  own ALREADY_LOADED path.

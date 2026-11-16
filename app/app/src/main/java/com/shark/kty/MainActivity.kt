@@ -2736,12 +2736,120 @@ class MainActivity : ComponentActivity() {
         addLog("Execution mode: ${mode.fullLabel}")
     }
 
-    /** App-direct jailbreak: spawn the SHARK runner (libk*.so run) with a
-     * plain ProcessBuilder inside the app sandbox (LOCAL backend) and the
-     * app-domain env: PYB110_APP_DOMAIN switches the engine to perf
-     * self-sampling + the fixed linear frame, the ksud path comes from
-     * PackageManager, and the root script writes the per-run ksu.log
-     * markers the verdict polls. No privileged backend involved. */
+    /** Kernel release -> bundled GLK1 asset for the unlock pre-stage. */
+    private fun ghostlockProfileAsset(): String? = GHOSTLOCK_PROFILES[kernelVersion]
+
+    /** Stage the GLK1 profile for the unlock engine (idempotent, one copy
+     * per install). Returns the staged file or null when this kernel has
+     * no bundled profile. */
+    private fun stageGhostlockProfile(): File? {
+        val asset = ghostlockProfileAsset() ?: return null
+        val homeDir = File(filesDir, "ghostlock")
+        if (!homeDir.isDirectory) homeDir.mkdirs()
+        val profile = File(homeDir, asset)
+        runCatching {
+            if (!profile.isFile || profile.length() == 0L) {
+                assets.open("ghostlock_profiles/$asset").use { input ->
+                    profile.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        }.onFailure {
+            addLog("Failed to stage the unlock profile: $it")
+            return null
+        }
+        return profile
+    }
+
+    /** Clean-boot unlock pre-stage for the 98260 shark engine. SELinux
+     * enforcing denies perf_event_open for untrusted_app (14:35 field run:
+     * EACCES, exit 13 - the shark engine's perf leaks sit BEFORE its first
+     * kernel write). The 43499 engine's W1 (SELinux permissive write via
+     * the kernelsnitch mm leak + futex PI route) needs no privilege and no
+     * perf - it runs before task discovery by design and is field-proven
+     * from this exact app sandbox (09:04). PYB110_UNLOCK_ONLY stops that
+     * engine right after W1; one landed write unblocks the shark chain.
+     * Returns true when UNLOCK_OK was observed. */
+    private fun runUnlockStage(ksud: String): Boolean {
+        val engine = File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE)
+        if (!engine.isFile) {
+            addLog("Unlock engine missing (${GHOSTLOCK_ENGINE}); on a clean enforcing boot the shark engine needs it")
+            return false
+        }
+        val profile = stageGhostlockProfile()
+        if (profile == null) {
+            addLog("Unlock profile missing for $kernelVersion")
+            return false
+        }
+        val runDir = File(filesDir, "ghostlock/run")
+        if (!runDir.isDirectory) runDir.mkdirs()
+        addLog("[unlock] CVE-2026-43499 W1: kernelsnitch mm leak + SELinux permissive (no perf needed)")
+        val cmd = arrayOf(
+            engine.absolutePath,
+            "--load-prebuilt-profile", profile.absolutePath
+        )
+        val env = arrayOf(
+            "PATH=/system/bin:/system/xbin:/data/adb/ksu/bin",
+            "HOME=${runDir.absolutePath}",
+            "GHOSTLOCK_HOME=${runDir.absolutePath}",
+            "TMPDIR=${runDir.absolutePath}",
+            "GHOSTLOCK_KSU_LOG=${File(runDir, "ksu.log").absolutePath}",
+            "GHOSTLOCK_KSUD=$ksud",
+            "PYB110_UNLOCK_ONLY=1"
+        )
+        val unlocked = java.util.concurrent.atomic.AtomicBoolean(false)
+        return try {
+            val p = PrivService.newProcessFor(PrivBackend.LOCAL, cmd, env, runDir.absolutePath)
+            val out = p.getInputStream()
+            val err = p.getErrorStream()
+            val t1 = Thread {
+                try {
+                    out.bufferedReader().forEachLine {
+                        if (it.contains("UNLOCK_OK")) unlocked.set(true)
+                        addLog(it)
+                    }
+                } catch (t: Throwable) {
+                    // stream closed by waitFor() cleanup
+                }
+            }.apply { isDaemon = true; start() }
+            val t2 = Thread {
+                try {
+                    err.bufferedReader().forEachLine { addLog(it) }
+                } catch (t: Throwable) {
+                    // stream closed by waitFor() cleanup
+                }
+            }.apply { isDaemon = true; start() }
+            /* Watchdog: the engine is field-proven at ~23 s end to end; the
+             * bound only exists so a wedged scan cannot hold the button. */
+            val watchdog = Thread {
+                try {
+                    Thread.sleep(240_000)
+                    p.destroy()
+                } catch (t: Throwable) {
+                    // interrupted by normal completion
+                }
+            }.apply { isDaemon = true; start() }
+            val rc = p.waitFor()
+            watchdog.interrupt()
+            runCatching { out.close() }
+            runCatching { err.close() }
+            t1.join(2000)
+            t2.join(2000)
+            addLog("[unlock] exit=$rc unlocked=${unlocked.get()}")
+            unlocked.get()
+        } catch (t: Throwable) {
+            addLog("[unlock] spawn failed: $t")
+            false
+        }
+    }
+
+    /** App-direct jailbreak: first the 43499 unlock pre-stage (W1: SELinux
+     * permissive - no perf, no privilege, works on a clean enforcing boot),
+     * then the SHARK runner (libk*.so run) with a plain ProcessBuilder
+     * inside the app sandbox (LOCAL backend) and the app-domain env:
+     * PYB110_APP_DOMAIN switches the engine to perf self-sampling + the
+     * fixed linear frame, the ksud path comes from PackageManager, and the
+     * root script writes the per-run ksu.log markers the verdict polls. No
+     * privileged backend involved. */
     private suspend fun runSharkDirect(softReboot: Boolean): Pair<Int, Boolean> {
         val runner = appDirectRunner()
         if (runner == null) {
@@ -2779,6 +2887,15 @@ class MainActivity : ComponentActivity() {
         }
         addLog("Starting CVE-2026-98260 SHARK (app-direct - no ADB / Stellar / Shizuku)")
         addLog("Manager ${initialManager.fullLabel}; ksud=$ksud")
+        /* Clean-boot gate: the shark engine's perf leaks need SELinux
+         * permissive (the 14:35 run died exactly here). Unlock first with
+         * the field-proven 43499 W1, then continue either way - the shark
+         * preflight fail-closes by itself if perf stays blocked. */
+        val unlocked = runUnlockStage(ksud)
+        addLog(
+            if (unlocked) "[unlock] SELinux permissive; continuing with the 98260 SHARK engine"
+            else "[unlock] permissive not confirmed; the shark engine will fail-closed if perf stays blocked"
+        )
         val cmd = arrayOf(
             File(applicationInfo.nativeLibraryDir, runner).absolutePath,
             "run"
@@ -2886,6 +3003,14 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val REQ_SHIZUKU = 1001
+        private const val GHOSTLOCK_ENGINE = "libghostlock.so"
+
+        /* Kernels with a bundled GLK1 binary profile for the 43499 unlock
+         * pre-stage (same GL device measurements as the 09:04 field run). */
+        private val GHOSTLOCK_PROFILES: Map<String, String> = mapOf(
+            "6.1.157-android14-11-ga8b0b542991e-ab15601211" to
+                "6.1.157-android14-11-ga8b0b542991e-ab15601211.glk1"
+        )
 
         private val PROFILE_BY_RELEASE: Map<String, ExploitKind> = mapOf(
             "6.18.21-android17-5-gf957accaf563-ab15926176-4k" to ExploitKind.CVE61821,

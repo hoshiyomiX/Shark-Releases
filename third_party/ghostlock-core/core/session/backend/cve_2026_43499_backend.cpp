@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cstdlib>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -518,6 +519,17 @@ namespace ghostlock::session::backend {
                 return StageResult::Done;
             case StageResult::Continue:
                 break;
+        }
+        /* Unlock-only mode (the app-direct pre-stage for the 98260 shark
+         * engine): W1 has landed (or SELinux was already permissive), which
+         * unblocks the app-domain perf self-sampling the shark engine needs
+         * for its kernel-address leaks - SELinux denies perf_event_open for
+         * untrusted_app while enforcing (14:35 field run: EACCES, exit 13,
+         * before any write). Stop here: no victim spawn (the perf-dependent
+         * stage), no W2/W3, no handoff. The caller greps UNLOCK_OK. */
+        if (getenv("PYB110_UNLOCK_ONLY") != nullptr) {
+            pr_success("UNLOCK_OK: SELinux permissive; perf self-sampling unblocked\n");
+            return StageResult::Done;
         }
 
         /* W2+W3 as a retryable chain: a missed W3 write or probe can kill the
