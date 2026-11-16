@@ -2760,6 +2760,19 @@ class MainActivity : ComponentActivity() {
         return profile
     }
 
+    /** /sys/fs/selinux/enforce raw value for the unlock evidence lines
+     * ("1" enforcing / "0" permissive / "unreadable"); stays readable
+     * from the app sandbox on this ROM (see the app-domain direct reads
+     * in readDeviceState). Round-6 (07:14 run): the unlock stage exited
+     * 0 with no W1 output while SELinux was already permissive at the
+     * shark preflight - these two lines make the warm-retry case visible
+     * in the next field log instead of inferable. */
+    private fun readEnforceRaw(): String = try {
+        File("/sys/fs/selinux/enforce").readText().trim()
+    } catch (t: Throwable) {
+        "unreadable"
+    }
+
     /** Clean-boot unlock pre-stage for the 98260 shark engine. SELinux
      * enforcing denies perf_event_open for untrusted_app (14:35 field run:
      * EACCES, exit 13 - the shark engine's perf leaks sit BEFORE its first
@@ -2783,6 +2796,7 @@ class MainActivity : ComponentActivity() {
         val runDir = File(filesDir, "ghostlock/run")
         if (!runDir.isDirectory) runDir.mkdirs()
         addLog("[unlock] CVE-2026-43499 W1: kernelsnitch mm leak + SELinux permissive (no perf needed)")
+        addLog("[unlock] enforce before=${readEnforceRaw()}")
         val cmd = arrayOf(
             engine.absolutePath,
             "--load-prebuilt-profile", profile.absolutePath
@@ -2835,6 +2849,7 @@ class MainActivity : ComponentActivity() {
             t1.join(2000)
             t2.join(2000)
             addLog("[unlock] exit=$rc unlocked=${unlocked.get()}")
+            addLog("[unlock] enforce after=${readEnforceRaw()}")
             unlocked.get()
         } catch (t: Throwable) {
             addLog("[unlock] spawn failed: $t")

@@ -1125,3 +1125,70 @@ Round-6 read of the next log:
 * The panic path is unchanged: one attempt per clean boot; pstore
   stays EACCES (errno=13) in the app domain so the previous panic's
   trace remains unavailable there.
+
+## Field-fix record: 2026-11-17 07:14 round-6 run — vehicle syscalls 100% failed (err == iters)
+
+Build 9642aa3 (versionCode 95), MANAGER=BakaSU, `BOOT_REASON=reboot`.
+The unlock pre-stage exited 0 within the same second without any W1
+output (`unlocked=false`), yet SELinux was permissive by the shark
+preflight (`[app] perf diag ... enforce=0`, `PLANT_FAIL
+(enforce=Permissive)`) — the warm-retry note above (a previous attempt
+in the same boot already landed W1) is the expected explanation; this
+build now prints `enforce before/after` around the stage so the next
+log shows it directly. The runner chain then reached the fake-cred
+stage; all three attempts x four vehicle windows reported
+`V=0(n=0) agreed=0 wins=0/4 floor=1000`, exit 13.
+
+Diagnosis (the round-5 evidence lines earned their keep):
+
+* Every window printed `err` equal to the FULL iteration budget
+  (300000/300000/250000/150000): ALL vehicle syscalls returned < 0.
+  The round-5 fallback `SYS_timer_getoverrun 437` is openat2 on
+  aarch64 (the correct number is 109), so the getoverrun pair called
+  openat2 with the timer id as dirfd. The gt/st windows used the
+  CORRECT numbers (108 gettime / 110 settime) and still failed 100%:
+  the bionic `timer_t` handle is not the raw kernel timer id, so the
+  raw syscalls never addressed the victim timer at all. The
+  posix-cpu-timer bodies (x23 = k_itimer) never executed — the vote
+  never received real input, and the recurring raw top-1
+  (0xffffff821c286300, 18-32 hits, residue 0x80 mod 0x140) is a
+  failure-path object, not k_itimer evidence.
+
+Fix (this build, versionCode 96):
+
+1. The app-domain victim timer is created and armed through the RAW
+   aarch64 syscalls (107 create / 110 settime) and the KERNEL timer id
+   is kept; `app_leak_victim` receives that raw id and all three
+   vehicles call 108/109/110 on it directly — immune to bionic's
+   timer_t wrapper policy and to header gaps.
+2. `perf_self_sample` prints the first failing errno per window
+   (`eno=`): EINVAL vs EBADF vs 0 becomes a one-look signal.
+3. The sampling ring is drained into the histogram every 512
+   iterations with a wrap-safe record copy (`perf_hist_drain` /
+   `perf_ring_copy`): with working vehicles the windows generate far
+   more samples than the 128 KiB ring holds, and round-5's
+   parse-once-at-the-end would wrap and desync.
+4. The app logs `enforce before/after` around the unlock stage.
+   The vote (>= 2 windows x >= 1000 votes), the stride filter
+   (TIMER_ALLOC=0x140) and the window layout are unchanged — the
+   round-5 design never had real input.
+
+Round-7 read of the next log:
+
+* `eno=0` + `err=0` on the vehicle windows and a stride-passing top-1
+  with large counts agreeing across >= 2 windows -> `agreed=1
+  wins>=2/4` -> `[+] plant1 victim report: V=<k_itimer>` -> decoy ->
+  race -> `PLANT_CRED_OK` -> `[child] woke uid=0` -> root script ->
+  `MODULE_LOADED` -> `RESULT=SUCCESS` — the round-4b validation gap
+  closes.
+* `eno=22` (EINVAL) with the raw id -> the id itself is rejected by
+  the kernel; re-check the raw-create path before touching the vote.
+* `eno=0` but the raw top-1 still fails the 0x140 stride with a huge
+  count -> the real k_itimer under a different stride (the round-5
+  map's TIMER_ALLOC branch; 0x140 stays probe-proven until that log
+  says otherwise).
+* `enforce before=0` on a CLEAN boot would mean the unlock
+  short-circuit deserves its own look (before=1 -> after=0 with
+  UNLOCK_OK is the normal clean-boot path).
+* The panic path is unchanged: one attempt per clean boot; pstore
+  stays EACCES (errno 13) in the app domain.
