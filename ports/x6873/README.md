@@ -1192,3 +1192,68 @@ Round-7 read of the next log:
   UNLOCK_OK is the normal clean-boot path).
 * The panic path is unchanged: one attempt per clean boot; pstore
   stays EACCES (errno 13) in the app domain.
+
+## Round-7 record (08:03:35 WITA Nov 17, fad25ac vc96, warm same-boot)
+
+Map branch taken: `eno=0` + `err=0` with a stride-passing top-1
+agreeing across windows -> `agreed=1 wins=2/4` - the round-6
+raw-timer fix is FIELD-VALIDATED (V=0xffffffb07d570000, n
+5127-5407, the same victim object re-identified by all five stage
+cycles; `eno` never moved off 0). The chain then ran further than
+ever before: victim report -> decoy -> all five stage writes
+(`fake_cred` install at A=V+0x800, `fake_uid` zero at A+8,
+`tif_flags`, `seccomp`, `selinux`) -> "cred writes landed" -> wake.
+FAIL at the final readback: `[child] woke uid=10706 euid=10706` -
+the pristine app values - so the live child's task->cred never
+became A: the fake_cred install did not take effect on the live
+child task. Exit 13 (`cred`), no module load.
+
+Three log-honesty traps this round exposed (the first two are
+fixed in vc97):
+
+1. `[+] child report stage=2 ... setuid(0)=0 errno=0
+   resuid=0/0/0` was NOT a successful setuid. On the fake path the
+   report is sent immediately after the uid/euid sample and the
+   set*id fields were still the memset zeros; no setuid ever ran
+   (the fake path forbids it - commit_creds BUG_ON, the 16:28
+   precedent). vc97 marks unattempted fields -1.
+2. The unlock stage on a warm boot printed `unlocked=false` +
+   "permissive not confirmed" because SELinux was already
+   permissive at entry (enforce before=0): nothing to flip,
+   nothing to confirm, and the fail-closed warning that followed
+   was noise (perf was not blocked: paranoid=-1, and the chain
+   proceeded). vc97 counts permissive-at-entry as unlocked and
+   says so in the log.
+3. The duplicated tail (08:04:03-08:04:04, identical T=28316ms
+   and identical churn deltas) is the app log layer replaying the
+   runner buffer, not a second attempt; `exploit exit=13` fired
+   once. `holder=t61269-hold` is a compile-time prctl name
+   (plant_core.inc park_forever), not a thread id.
+
+## Round-8 map (read of the next log, vc97)
+
+The vc97 child report ends with `probe finit=<e> seccomp=<r>/<e>`
+(two read-only probes taken at the wake, before the uid check):
+
+* `finit=1` (EPERM): the seccomp filter still enforces -> the
+  tif_flags zero (task+0) did NOT land. Together with the pristine
+  uid this means the child-task writes are not landing at all ->
+  the plant write/trigger or the leaked task address is the
+  suspect, not the cred encoding alone.
+* `finit=9` (EBADF) + `seccomp=2/0`: tif_flags LANDED, the
+  seccomp-struct zero (task+0x900) did NOT.
+* `finit=9` + `seccomp=-1/22`: tif+seccomp both LANDED; only the
+  fake_cred install missed -> the install encoding (mode=fake,
+  parent_color=A walk-forced variant) is the round-9 suspect.
+* `[child] woke uid=0 euid=0` -> the install landed this time:
+  PLANT_CRED_OK -> root script -> MODULE_LOADED -> RESULT=SUCCESS
+  (the round-4b validation gap closes).
+* uid wakes as a huge garbage value (not 0, not 10706): the
+  install landed but the fake_uid zero (A+8) missed -> audit that
+  store. The offset itself is corroborated (ghostlock core model:
+  CRED_UID_OFF=8, caps 0x30 x5, security 0x80 - the same layout
+  family the X6873 profile measured), so a miss there points at
+  the store, not the offset.
+* `setuid(0)=-1 errno=-1 resuid=-1/-1/-1` on the fake path is the
+  new honest "not attempted" marker; probe fields at -1 mean n-a
+  (warm/shell paths).

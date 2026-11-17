@@ -2781,7 +2781,9 @@ class MainActivity : ComponentActivity() {
      * perf - it runs before task discovery by design and is field-proven
      * from this exact app sandbox (09:04). PYB110_UNLOCK_ONLY stops that
      * engine right after W1; one landed write unblocks the shark chain.
-     * Returns true when UNLOCK_OK was observed. */
+     * Returns true when UNLOCK_OK was observed, or when the device was
+     * already permissive at entry (warm same-boot retry - round-7 log
+     * 08:03:35: enforce before=0, nothing to flip, nothing to confirm). */
     private fun runUnlockStage(ksud: String): Boolean {
         val engine = File(applicationInfo.nativeLibraryDir, GHOSTLOCK_ENGINE)
         if (!engine.isFile) {
@@ -2796,7 +2798,8 @@ class MainActivity : ComponentActivity() {
         val runDir = File(filesDir, "ghostlock/run")
         if (!runDir.isDirectory) runDir.mkdirs()
         addLog("[unlock] CVE-2026-43499 W1: kernelsnitch mm leak + SELinux permissive (no perf needed)")
-        addLog("[unlock] enforce before=${readEnforceRaw()}")
+        val enforceBefore = readEnforceRaw()
+        addLog("[unlock] enforce before=$enforceBefore")
         val cmd = arrayOf(
             engine.absolutePath,
             "--load-prebuilt-profile", profile.absolutePath
@@ -2850,6 +2853,18 @@ class MainActivity : ComponentActivity() {
             t2.join(2000)
             addLog("[unlock] exit=$rc unlocked=${unlocked.get()}")
             addLog("[unlock] enforce after=${readEnforceRaw()}")
+            /* Warm path (round-7 log 08:03:35): SELinux was already
+             * permissive at entry (enforce=0 - a previous attempt this
+             * boot already landed W1, or the boot came up permissive),
+             * so the stage has nothing to flip and UNLOCK_OK never
+             * prints; unlocked stayed false and the continuation line
+             * wrongly warned "permissive not confirmed". Permissive at
+             * entry already satisfies the stage's purpose (unblock perf
+             * for the shark chain): count it as unlocked and say so. */
+            if (!unlocked.get() && enforceBefore == "0") {
+                addLog("[unlock] permissive at entry (enforce=0); warm path - counting as unlocked")
+                unlocked.set(true)
+            }
             unlocked.get()
         } catch (t: Throwable) {
             addLog("[unlock] spawn failed: $t")
