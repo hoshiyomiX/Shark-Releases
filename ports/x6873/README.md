@@ -1257,3 +1257,66 @@ The vc97 child report ends with `probe finit=<e> seccomp=<r>/<e>`
 * `setuid(0)=-1 errno=-1 resuid=-1/-1/-1` on the fake path is the
   new honest "not attempted" marker; probe fields at -1 mean n-a
   (warm/shell paths).
+
+## Round-8 record (09:30:56 WITA Nov 17, 4fdb5e9 vc97, warm same-boot)
+
+Map branch taken: NONE - the run died at the readback with a new
+failure mode: `[!] child report missing (n=0 wait=25094 status=0x1f)`.
+n=0 is pipe EOF: the child died BEFORE the early send. status=0x1f is
+the raw waitpid word -> WIFSIGNALED, signal 31 = SIGSYS ("bad
+syscall"), the standard seccomp KILL signature, uncatchable. The only
+new syscalls in vc97's wake path were the two round-8 probes; prctl is
+allowlisted everywhere, so the kill landed on
+`syscall(SYS_finit_module, -1, "", 0)`: this build's app filter answers
+finit_module with SECCOMP_RET_KILL, not ERRNO. The round-8 map assumed
+EPERM/EBADF and was falsified in the field. vc96 (no probes) reached a
+full report; vc97 died at the probe - the delta isolates the cause to
+the probe itself. Consequence: round-8 delivered ZERO signal on the
+underlying fake_cred-install question (uid/euid were already in the
+child's stack report when it died; the pipe-send-at-end design lost
+them with the child). The rest of the chain replayed round-7: V sticky
+(0xffffffb07d570000, n 3819-6077, agreed=1 wins=2/4), all five stage
+writes "landed" (decoy A=...70800, same page across segments), then
+FAIL=cred exit 13, no module load.
+
+## Round-9 map (read of the next log, vc98)
+
+vc98: the report rides a MAP_SHARED memfd page (fd 5, created by
+leak_cred before the fork, guarded by the PYB110_REP_FD env so a stray
+fd 5 is never mmaped) - a mid-path KILL can no longer lose it. The
+child publishes a step BEFORE every syscall (1 hello/self-sample,
+2 wake read, 3 uid/euid, 4 filter probe, 5 PR_GET_SECCOMP, 6 send);
+the parent salvages the page whenever the pipe read comes up short.
+The finit_module probe is now census-chosen: six cap-gated calls
+(finit_module, open_by_handle_at, bpf_map_create, kexec_load,
+delete_module, swapon) are each tried once in a sacrificial fork
+first (one `[census]` line each; a KILL census never touches the real
+child); the in-child field is `probe_filter_errno`, printed by the
+parent as `probe <name>=<e>`.
+
+Read order:
+1. `[census]` lines first - they confirm/refute the round-8 diagnosis
+   directly: `[census] finit_module: KILL sig=31 (...)` confirms the
+   SIGSYS cause; `[census] probe chosen: <name> (...)` says which call
+   the child used instead (or `n/a` - then the filter probe is skipped
+   and stays -1, never lethal).
+2. `[+] child report stage=2 step=N ... probe <name>=<e> ...` (pipe
+   path, child survived) - read as the round-8 map with <name> in
+   place of finit:
+   * `probe <name>=1` (EPERM) + uid pristine 10706 -> the child-task
+     writes are not landing at all -> the plant write/trigger or the
+     leaked task address, not just the cred encoding.
+   * `probe <name>=<natural>` + seccomp=2 -> tif landed, the
+     seccomp-struct zero (task+0x900) missed; + seccomp=-1/22 ->
+     tif+seccomp landed, only the fake_cred install missed -> the
+     install encoding (mode=fake) is the round-10 suspect.
+   * uid=0 euid=0 -> PLANT_CRED_OK -> root script -> MODULE_LOADED ->
+     RESULT=SUCCESS -> run the round-4b validation audit and propose
+     sealing Task 9.
+   * uid wakes as huge garbage (not 0, not 10706) -> the install
+     landed but the fake_uid zero (A+8) missed -> audit that store.
+3. `[!] child report missing` again (should not happen now): the
+   follow-up `[+] report salvaged from shm: last step=N (name)` line
+   names the exact syscall window that died and still carries
+   uid/euid; the status line is decoded (`WIFSIGNALED sig 31 (SIGSYS
+   ...)`) - no more 0x1f guessing.
